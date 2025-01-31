@@ -1,5 +1,6 @@
 use std::{io::Cursor, sync::Arc};
 
+use crate::smartout::SmartWriter;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
@@ -8,20 +9,16 @@ use moq_transport::serve::{
 };
 use moq_transport::session::{SubscribeFilter, Subscriber};
 use mp4::ReadBox;
-use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::Mutex,
-    task::JoinSet,
-};
+use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 
-pub struct Media<O> {
+pub struct Media<O: SmartWriter + Send + Unpin + 'static> {
     subscriber: Subscriber,
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
     output: Arc<Mutex<O>>,
 }
 
-impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
+impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     pub async fn new(subscriber: Subscriber, tracks: Tracks, output: O) -> anyhow::Result<Self> {
         let (tracks_writer, _tracks_request, tracks_reader) = tracks.produce();
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
@@ -64,7 +61,11 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
 
             let object = group.next().await?.context("no init fragment")?;
             let buf = Self::recv_object(object).await?;
-            self.output.lock().await.write_all(&buf).await?;
+            self.output
+                .lock()
+                .await
+                .write_group(group.group_id, &buf)
+                .await?;
             let mut reader = Cursor::new(&buf);
 
             let ftyp = read_atom(&mut reader).await?;
@@ -148,16 +149,22 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
 
     async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
+
+        let mut guard = out.lock().await;
+
+        if group.group_id < guard.last_group_id() {
+            return Ok(());
+        }
+
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
                 group.group_id,
                 object.object_id
             );
-            let out = out.clone();
             let buf = Self::recv_object(object).await?;
 
-            out.lock().await.write_all(&buf).await?;
+            guard.write_group(group.group_id, &buf);
         }
 
         Ok(())

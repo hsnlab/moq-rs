@@ -6,6 +6,7 @@ use url::Url;
 
 use moq_native_ietf::quic;
 use moq_sub::media::Media;
+use moq_sub::smartout::SmartOut;
 use moq_transport::{coding::Tuple, serve::Tracks};
 
 #[tokio::main]
@@ -18,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
         .finish();
     tracing::subscriber::set_global_default(tracer).unwrap();
 
-    let out = tokio::io::stdout();
+    let out = SmartOut::new(tokio::io::stdout());
 
     let config = Config::parse();
     let tls = config.tls.load()?;
@@ -27,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         tls,
     })?;
 
-    let session = quic.client.connect(&config.url).await?;
+    let session = quic.client.connect(&config.url_primary).await?;
 
     let (session, subscriber) = moq_transport::session::Subscriber::connect(session)
         .await
@@ -54,7 +55,11 @@ pub struct Config {
 
     /// Connect to the given URL starting with https://
     #[arg(value_parser = moq_url)]
-    pub url: Url,
+    pub url_primary: Url,
+
+    /// Connect to the given URL starting with https://
+    #[arg(value_parser = moq_url)]
+    pub url_secondary: Url,
 
     /// The name of the broadcast
     #[arg(long)]
