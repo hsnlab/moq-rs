@@ -2,7 +2,11 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub trait SmartWriter {
     fn last_group_id(&self) -> u64;
-    async fn write_group(&mut self, group_id: u64, buf: &Vec<u8>) -> Result<(), std::io::Error>;
+    fn write_group(
+        &mut self,
+        group_id: u64,
+        buf: &Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
 }
 
 pub struct SmartOut<O: AsyncWrite + Send + Unpin + 'static> {
@@ -26,7 +30,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
     async fn write_group(&mut self, group_id: u64, buf: &Vec<u8>) -> Result<(), std::io::Error> {
         self.out.write_all(&buf).await?;
         self.group_id = group_id;
-        log::debug!("🤡: group_id={group_id}");
 
         Ok(())
     }
