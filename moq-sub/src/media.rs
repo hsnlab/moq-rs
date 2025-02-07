@@ -4,8 +4,8 @@ use crate::smartout::SmartWriter;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
-    SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode, Tracks, TracksReader,
-    TracksWriter,
+    ServeError, SubgroupInfo, SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode,
+    Tracks, TracksReader, TracksWriter,
 };
 use moq_transport::session::{SubscribeFilter, Subscriber};
 use mp4::ReadBox;
@@ -37,8 +37,10 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         })
     }
 
-    pub fn get_full_track_name(group: &SubgroupReader) -> String {
-        group.info.track.namespace.to_utf8_path() + ":" + &group.info.track.name
+    pub fn create_fully_qualified_group_id(group: &SubgroupInfo) -> String {
+        let x =
+            group.namespace.to_utf8_path() + ":" + &group.name + ":" + &group.group_id.to_string();
+        x
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
@@ -70,15 +72,19 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                 _ => anyhow::bail!("expected init segment"),
             };
 
-            let object = group.next().await?.context("no init fragment")?;
-            let buf = Self::recv_object(object).await?;
-            log::debug!("💻: LOCK STARTS");
+            let mut object = group.next().await?.context("no init fragment")?;
+            let buf = Self::read_object(&mut object).await?;
+            // log::debug!("💻: LOCK STARTS");
             self.output
                 .lock()
                 .await
-                .write_group(Self::get_full_track_name(&group), group.group_id, &buf)
+                .write_object(
+                    Self::create_fully_qualified_group_id(&object.group),
+                    object.object_id,
+                    &buf,
+                )
                 .await?;
-            log::debug!("💻: LOCK ENDS");
+            // log::debug!("💻: LOCK ENDS");
             let mut reader = Cursor::new(&buf);
 
             let ftyp = read_atom(&mut reader).await?;
@@ -151,8 +157,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         debug!("track {name}: start");
         if let TrackReaderMode::Subgroups(mut groups) = track.mode().await? {
             while let Some(group) = groups.next().await? {
-                let out = out.clone();
-                if let Err(err) = Self::recv_group(group, out, sname).await {
+                if let Err(err) = Self::recv_group(group, out.clone(), sname).await {
                     warn!("failed to receive group: {err:?}");
                 }
             }
@@ -168,36 +173,57 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     ) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
-        let out = out.clone();
-        let mut guard = out.lock().await;
-        log::debug!("💻: LOCK STARTS ({})", sname);
-        log::debug!("🤡: group_id={}", group.group_id);
-
-        if let Some(last_group_id) = guard.last_group_id(&Self::get_full_track_name(&group)) {
-            if group.group_id <= last_group_id {
-                log::debug!("💻: LOCK ENDS (early)");
-                return Ok(());
-            }
-        }
-
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
                 group.group_id,
                 object.object_id
             );
-            let buf = Self::recv_object(object).await?;
 
-            guard
-                .write_group(Self::get_full_track_name(&group), group.group_id, &buf)
-                .await?;
+            Self::recv_object(object, out.clone(), sname).await?;
         }
 
-        log::debug!("💻: LOCK ENDS");
         Ok(())
     }
 
-    async fn recv_object(mut object: SubgroupObjectReader) -> anyhow::Result<Vec<u8>> {
+    async fn recv_object(
+        mut object: SubgroupObjectReader,
+        out: Arc<Mutex<O>>,
+        sname: &str,
+    ) -> anyhow::Result<()> {
+        let mut writer = out.lock().await;
+        // log::debug!("💻: LOCK STARTS ({})", sname);
+        // log::debug!(
+        //     "🤡: group_id={} object_id={}",
+        //     object.group_id,
+        //     object.object_id
+        // );
+
+        if let Some(last_object_id) =
+            writer.last_object_id(&Self::create_fully_qualified_group_id(&object.group))
+        {
+            if object.object_id <= last_object_id {
+                // log::debug!("💻: LOCK ENDS (early)");
+                return Ok(());
+            }
+        }
+
+        let buf = Self::read_object(&mut object).await?;
+
+        writer
+            .write_object(
+                Self::create_fully_qualified_group_id(&object.group),
+                object.object_id,
+                &buf,
+            )
+            .await?;
+
+        // log::debug!("💻: LOCK ENDS");
+
+        Ok(())
+    }
+
+    async fn read_object(object: &mut SubgroupObjectReader) -> Result<Vec<u8>, ServeError> {
         let mut buf = Vec::with_capacity(object.size);
         while let Some(chunk) = object.read().await? {
             buf.extend_from_slice(&chunk);
