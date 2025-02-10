@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{Context, Error};
 use clap::Parser;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -32,30 +34,30 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     let namespace = Tuple::from_utf8_path(&config.name);
-    let (session1, subscriber1, tracks1) = create_session(
-        &config.tls,
-        config.bind,
-        &config.url_primary,
-        namespace.clone(),
-    )
-    .await?;
-    log::debug!("😶: session1 started.");
-    let (session2, subscriber2, tracks2) = create_session(
-        &config.tls,
-        config.bind,
-        &config.url_secondary,
-        namespace.clone(),
-    )
-    .await?;
-    log::debug!("😶: session2 started.");
+    let mut tasks = FuturesUnordered::new();
 
-    let mut media1 = Media::new(subscriber1, tracks1, out.clone(), "Relay 1".to_string()).await?;
-    let mut media2 = Media::new(subscriber2, tracks2, out.clone(), "Relay 2".to_string()).await?;
-    tokio::select! {
-        res = session1.run() => res.context("session error (1)")?,
-        res = session2.run() => res.context("session error (2)")?,
-        res = media1.run() => res.context("media error")?,
-        res = media2.run() => res.context("media error")?,
+    for (i, url) in config.urls.iter().enumerate() {
+        let (session, subscriber, tracks) =
+            create_session(&config.tls, config.bind, url, namespace.clone()).await?;
+        log::debug!("session {} started for url {:?}.", i, url);
+        let mut media = Media::new(subscriber, tracks, out.clone(), format!("Relay {}", i)).await?;
+        tasks.push(tokio::spawn(async move {
+            session.run().await.or_else(|e| Err(format!("{:?}", e)))
+        }));
+        tasks.push(tokio::spawn(async move {
+            media.run().await.or_else(|e| Err(format!("{:?}", e)))
+        }));
+    }
+
+    while let Some(finished_task) = tasks.next().await {
+        match finished_task {
+            Err(e) => {
+                log::error!("{:?}", e);
+            }
+            Ok(result) => {
+                log::debug!("Task result: {:?}", result);
+            }
+        }
     }
 
     Ok(())
@@ -90,11 +92,7 @@ pub struct Config {
 
     /// Connect to the given URL starting with https://
     #[arg(value_parser = moq_url)]
-    pub url_primary: Url,
-
-    /// Connect to the given URL starting with https://
-    #[arg(value_parser = moq_url)]
-    pub url_secondary: Url,
+    pub urls: Vec<Url>,
 
     /// The name of the broadcast
     #[arg(long)]
