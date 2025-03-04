@@ -16,7 +16,6 @@ pub struct Media<O: SmartWriter + Send + Unpin + 'static> {
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
     output: Arc<Mutex<O>>,
-    name: String,
 }
 
 impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
@@ -24,7 +23,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         subscriber: Subscriber,
         tracks: Tracks,
         output: Arc<Mutex<O>>,
-        name: String,
     ) -> anyhow::Result<Self> {
         let (tracks_writer, _tracks_request, tracks_reader) = tracks.produce();
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
@@ -33,7 +31,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
             broadcast,
             tracks_writer,
             output,
-            name,
         })
     }
 
@@ -139,11 +136,10 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         info!("playing {} tracks", tracks.len());
         let mut tasks = JoinSet::new();
         for track in tracks {
-            let sname = self.name.clone();
             let out = self.output.clone();
             tasks.spawn(async move {
                 let name = track.name.clone();
-                if let Err(err) = Self::recv_track(track, out, &sname).await {
+                if let Err(err) = Self::recv_track(track, out).await {
                     warn!("failed to play track {name}: {err:?}");
                 }
             });
@@ -152,12 +148,12 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         Ok(())
     }
 
-    async fn recv_track(track: TrackReader, out: Arc<Mutex<O>>, sname: &str) -> anyhow::Result<()> {
+    async fn recv_track(track: TrackReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
         let name = track.name.clone();
         debug!("track {name}: start");
         if let TrackReaderMode::Subgroups(mut groups) = track.mode().await? {
             while let Some(group) = groups.next().await? {
-                if let Err(err) = Self::recv_group(group, out.clone(), sname).await {
+                if let Err(err) = Self::recv_group(group, out.clone()).await {
                     warn!("failed to receive group: {err:?}");
                 }
             }
@@ -166,11 +162,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         Ok(())
     }
 
-    async fn recv_group(
-        mut group: SubgroupReader,
-        out: Arc<Mutex<O>>,
-        sname: &str,
-    ) -> anyhow::Result<()> {
+    async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
         while let Some(object) = group.next().await? {
@@ -180,7 +172,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                 object.object_id
             );
 
-            Self::recv_object(object, out.clone(), sname).await?;
+            Self::recv_object(object, out.clone()).await?;
         }
 
         Ok(())
@@ -189,21 +181,12 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     async fn recv_object(
         mut object: SubgroupObjectReader,
         out: Arc<Mutex<O>>,
-        sname: &str,
     ) -> anyhow::Result<()> {
         let mut writer = out.lock().await;
-        // log::debug!("💻: LOCK STARTS ({})", sname);
-        // log::debug!(
-        //     "🤡: group_id={} object_id={}",
-        //     object.group_id,
-        //     object.object_id
-        // );
-
         if let Some(last_object_id) =
             writer.last_object_id(&Self::create_fully_qualified_group_id(&object.group))
         {
             if object.object_id <= last_object_id {
-                // log::debug!("💻: LOCK ENDS (early)");
                 return Ok(());
             }
         }
@@ -217,8 +200,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                 &buf,
             )
             .await?;
-
-        // log::debug!("💻: LOCK ENDS");
 
         Ok(())
     }

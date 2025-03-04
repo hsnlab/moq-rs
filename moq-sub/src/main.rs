@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone()).await?;
         log::debug!("session {} started for url {:?}.", i, url);
-        let mut media = Media::new(subscriber, tracks, out.clone(), format!("Relay {}", i)).await?;
+        let mut media = Media::new(subscriber, tracks, out.clone()).await?;
         tasks.push(tokio::spawn(async move {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));
