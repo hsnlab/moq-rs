@@ -145,7 +145,8 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
             });
         }
         while tasks.join_next().await.is_some() {}
-        Ok(())
+        Err(anyhow::Error::msg("Finished receiving the media"))
+        //Ok(())
     }
 
     async fn recv_track(track: TrackReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {

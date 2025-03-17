@@ -56,6 +56,11 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(result) => {
                 log::debug!("Task result: {:?}", result);
+                if let Err(msg) = result {
+                    if msg == "Finished receiving the media" {
+                        break;
+                    }
+                }
             }
         }
     }
