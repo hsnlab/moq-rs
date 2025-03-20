@@ -21,7 +21,9 @@ use moq_transport::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::builder()
+        .format_timestamp_millis()
+        .init();
 
     // Disable tracing so we don't get a bunch of Quinn spam.
     let tracer = tracing_subscriber::FmtSubscriber::builder()
