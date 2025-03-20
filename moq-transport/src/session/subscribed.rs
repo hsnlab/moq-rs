@@ -325,10 +325,10 @@ impl Subscribed {
 
         let mut writer = Writer::new(stream);
 
-        let header: data::Header = header.into();
-        writer.encode(&header).await?;
+        let gr_header: data::Header = header.into();
+        writer.encode(&gr_header).await?;
 
-        log::trace!("sent group: {:?}", header);
+        log::trace!("sent group: {:?}", gr_header);
 
         while let Some(mut object) = subgroup.next().await? {
             let header = data::SubgroupObject {
@@ -344,7 +344,7 @@ impl Subscribed {
                 .ok_or(ServeError::Done)?
                 .update_max_group_id(subgroup.group_id)?;
 
-            log::trace!("sent group object: {:?}", header);
+            log::trace!("sent group object: {:?} group: {:?}", header, gr_header);
 
             while let Some(chunk) = object.read().await? {
                 writer.write(&chunk).await?;

@@ -290,7 +290,7 @@ impl Subscriber {
         while !reader.done().await? {
             let object: data::SubgroupObject = reader.decode().await?;
 
-            log::trace!("received group object: {:?}", object);
+            log::trace!("received group object: {:?} group: {:?}", object, group.info);
             let mut remain = object.size;
             let mut object = group.create(object.size, Some(object.object_id))?;
 
