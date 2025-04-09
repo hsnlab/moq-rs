@@ -27,7 +27,7 @@ pub trait SmartWriter {
 
 pub struct SmartOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
-    largest_ids: HashMap<String, (u64, u64)>,
+    largest_ids: HashMap<String, (u64, u64)>, // For each unique track
     subscribers: Vec<(u64, Subscriber)>,
 }
 
@@ -62,27 +62,19 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
         object: SubgroupObjectReader,
         buf: &Vec<u8>,
     ) -> Result<(), std::io::Error> {
-        let gid = object.group.group_id;
-        let oid = object.object_id;
-        if let Some((largest_gid, largest_oid)) = self.largest_ids.get(&key) {
-            if gid < *largest_gid {
-                return Ok(());
-            }
-            if gid == *largest_gid && oid <= *largest_oid {
+        let group_id = object.group_id;
+        let object_id = object.object_id;
+
+        let id = &(group_id, object_id);
+        if let Some(largest_id) = self.largest_ids.get(&key) {
+            if id < largest_id { // Already seen this pair
                 return Ok(());
             }
         }
 
         self.out.write_all(&buf).await?;
-        self.largest_ids.insert(key, (gid, oid));
+        self.largest_ids.insert(key, *id);
 
-        // little hack until Felician's patch is merged
-        let group_id: u64 = id
-            .split(':')
-            .last()
-            .expect("group_id was not provided in the id")
-            .parse()
-            .expect("group_id could not be converted to u64");
         for (subscribe_id, subscriber) in &mut self.subscribers {
             let _ = subscriber.subscribe_update(
                 *subscribe_id,
