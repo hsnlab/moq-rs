@@ -60,10 +60,11 @@ impl Subscriber {
 
     pub async fn subscribe(
         &mut self,
+        id: Option<u64>,
         track: serve::TrackWriter,
         filter: SubscribeFilter,
     ) -> Result<(), ServeError> {
-        let id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+        let id = id.unwrap_or_else(|| self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed));
 
         let (send, recv) = Subscribe::new(self.clone(), id, track, filter);
         self.subscribes.lock().unwrap().insert(id, recv);

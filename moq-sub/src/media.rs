@@ -1,3 +1,4 @@
+use std::sync::atomic;
 use std::{io::Cursor, sync::Arc};
 
 use crate::smartout::SmartWriter;
@@ -13,6 +14,7 @@ use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 
 pub struct Media<O: SmartWriter + Send + Unpin + 'static> {
     subscriber: Subscriber,
+    subscribe_next: Arc<atomic::AtomicU64>,
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
     output: Arc<Mutex<O>>,
@@ -28,6 +30,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
         Ok(Self {
             subscriber,
+            subscribe_next: Arc::new(atomic::AtomicU64::new(0)),
             broadcast,
             tracks_writer,
             output,
@@ -48,10 +51,13 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                 .create(init_track_name)
                 .context("failed to create init track")?;
 
+
+            let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+
             let mut subscriber = self.subscriber.clone();
             tokio::task::spawn(async move {
                 subscriber
-                    .subscribe(track, SubscribeFilter::LatestObject)
+                    .subscribe(Some(subscribe_id), track, SubscribeFilter::LatestObject)
                     .await
                     .unwrap_or_else(|err| {
                         warn!("failed to subscribe to init track: {err:?}");
@@ -71,7 +77,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
 
             let mut object = group.next().await?.context("no init fragment")?;
             let buf = Self::read_object(&mut object).await?;
-            // log::debug!("💻: LOCK STARTS");
             self.output
                 .lock()
                 .await
@@ -81,7 +86,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                     &buf,
                 )
                 .await?;
-            // log::debug!("💻: LOCK ENDS");
             let mut reader = Cursor::new(&buf);
 
             let ftyp = read_atom(&mut reader).await?;
@@ -119,10 +123,14 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                     .create(&name)
                     .context("failed to create track")?;
 
+                let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+                self.output.lock().await.add_subscriber(subscribe_id, self.subscriber.clone());
+
                 let mut subscriber = self.subscriber.clone();
                 tokio::task::spawn(async move {
+
                     subscriber
-                        .subscribe(track, SubscribeFilter::LatestObject)
+                        .subscribe(Some(subscribe_id), track, SubscribeFilter::LatestObject)
                         .await
                         .unwrap_or_else(|err| {
                             warn!("failed to subscribe to track: {err:?}");
