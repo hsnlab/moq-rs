@@ -5,7 +5,7 @@ use crate::smartout::SmartWriter;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
-    ServeError, SubgroupInfo, SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode,
+    ServeError, SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode,
     Tracks, TracksReader, TracksWriter,
 };
 use moq_transport::session::{SubscribeFilter, Subscriber};
@@ -35,12 +35,6 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
             tracks_writer,
             output,
         })
-    }
-
-    pub fn create_fully_qualified_group_id(group: &SubgroupInfo) -> String {
-        let x =
-            group.namespace.to_utf8_path() + ":" + &group.name + ":" + &group.group_id.to_string();
-        x
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
@@ -77,15 +71,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
 
             let mut object = group.next().await?.context("no init fragment")?;
             let buf = Self::read_object(&mut object).await?;
-            self.output
-                .lock()
-                .await
-                .write_object(
-                    Self::create_fully_qualified_group_id(&object.group),
-                    object.object_id,
-                    &buf,
-                )
-                .await?;
+            self.output.lock().await.write_object(object, &buf).await?;
             let mut reader = Cursor::new(&buf);
 
             let ftyp = read_atom(&mut reader).await?;
@@ -174,6 +160,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
+        let key = out.lock().await.create_key(&group);
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
@@ -181,34 +168,20 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                 object.object_id
             );
 
-            Self::recv_object(object, out.clone()).await?;
+            Self::recv_object(key.clone(), object, out.clone()).await?;
         }
 
         Ok(())
     }
 
     async fn recv_object(
+        key: String,
         mut object: SubgroupObjectReader,
         out: Arc<Mutex<O>>,
     ) -> anyhow::Result<()> {
-        let mut writer = out.lock().await;
-        if let Some(last_object_id) =
-            writer.last_object_id(&Self::create_fully_qualified_group_id(&object.group))
-        {
-            if object.object_id <= last_object_id {
-                return Ok(());
-            }
-        }
-
         let buf = Self::read_object(&mut object).await?;
 
-        writer
-            .write_object(
-                Self::create_fully_qualified_group_id(&object.group),
-                object.object_id,
-                &buf,
-            )
-            .await?;
+        out.lock().await.write_group_object(key, object, &buf).await?;
 
         Ok(())
     }
