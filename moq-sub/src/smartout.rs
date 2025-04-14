@@ -3,34 +3,6 @@ use moq_transport::{message::SubscribePair, serve::Track, session::{SubscribeFil
 use moq_transport::serve::SubgroupObjectReader;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-// TODO: I don't know whether it is considered to be a good practice
-// to use global functions (esp. exported ones) in Rust...
-pub fn create_key(track: &Track) -> String {
-    track.namespace.to_utf8_path() + ":" + &track.name
-}
-
-pub trait SmartWriter {
-    fn write_object(
-        &mut self,
-        object: SubgroupObjectReader,
-        buf: &Vec<u8>,
-    ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
-
-    fn write_group_object(
-        &mut self,
-        key: String,
-        object: SubgroupObjectReader,
-        buf: &Vec<u8>,
-    ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
-
-    fn add_subscriber(
-        &mut self,
-        key: String,
-        subscribe_id: u64,
-        subscriber: Subscriber,
-    );
-}
-
 struct TrackPlayoutStatus {
     last_id: Option<(u64, u64)>,
     subscribers: Vec<(u64, Subscriber)>,
@@ -49,19 +21,21 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
         }
     }
 
-}
+    pub fn create_key(track: &Track) -> String {
+        track.namespace.to_utf8_path() + ":" + &track.name
+    }
 
-impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
-    async fn write_object(
+
+    pub async fn write_object(
         &mut self,
         object: SubgroupObjectReader,
         buf: &Vec<u8>,
     ) -> Result<(), std::io::Error> {
-        let key = create_key(&object.group);
+        let key = Self::create_key(&object.group);
         return self.write_group_object(key, object, buf).await;
     }
 
-    async fn write_group_object(
+    pub async fn write_group_object(
         &mut self,
         key: String,
         object: SubgroupObjectReader,
@@ -97,7 +71,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
         Ok(())
     }
 
-    fn add_subscriber(
+    pub fn add_subscriber(
         self: &mut Self,
         key: String,
         subscribe_id: u64,

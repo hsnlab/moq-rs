@@ -1,7 +1,7 @@
 use std::sync::atomic;
 use std::{io::Cursor, sync::Arc};
 
-use crate::smartout::{create_key, SmartWriter};
+use crate::smartout::SmartOut;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
@@ -10,21 +10,22 @@ use moq_transport::serve::{
 };
 use moq_transport::session::{SubscribeFilter, Subscriber};
 use mp4::ReadBox;
+use tokio::io::AsyncWrite;
 use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 
-pub struct Media<O: SmartWriter + Send + Unpin + 'static> {
+pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
     subscriber: Subscriber,
     subscribe_next: Arc<atomic::AtomicU64>,
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
-    output: Arc<Mutex<O>>,
+    output: Arc<Mutex<SmartOut<O>>>,
 }
 
-impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
+impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
     pub async fn new(
         subscriber: Subscriber,
         tracks: Tracks,
-        output: Arc<Mutex<O>>,
+        output: Arc<Mutex<SmartOut<O>>>,
     ) -> anyhow::Result<Self> {
         let (tracks_writer, _tracks_request, tracks_reader) = tracks.produce();
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
@@ -47,7 +48,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
 
 
             let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-            self.output.lock().await.add_subscriber(create_key(&track.info), subscribe_id, self.subscriber.clone());
+            self.output.lock().await.add_subscriber(SmartOut::<O>::create_key(&track.info), subscribe_id, self.subscriber.clone());
 
             let mut subscriber = self.subscriber.clone();
             tokio::task::spawn(async move {
@@ -111,7 +112,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                     .context("failed to create track")?;
 
                 let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-                self.output.lock().await.add_subscriber(create_key(&track.info), subscribe_id, self.subscriber.clone());
+                self.output.lock().await.add_subscriber(SmartOut::<O>::create_key(&track.info), subscribe_id, self.subscriber.clone());
 
                 let mut subscriber = self.subscriber.clone();
                 tokio::task::spawn(async move {
@@ -144,7 +145,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         //Ok(())
     }
 
-    async fn recv_track(track: TrackReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
+    async fn recv_track(track: TrackReader, out: Arc<Mutex<SmartOut<O>>>) -> anyhow::Result<()> {
         let name = track.name.clone();
         debug!("track {name}: start");
         if let TrackReaderMode::Subgroups(mut groups) = track.mode().await? {
@@ -158,10 +159,10 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
         Ok(())
     }
 
-    async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
+    async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<SmartOut<O>>>) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
-        let key = create_key(&group);
+        let key = SmartOut::<O>::create_key(&group);
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
@@ -178,7 +179,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     async fn recv_object(
         key: String,
         mut object: SubgroupObjectReader,
-        out: Arc<Mutex<O>>,
+        out: Arc<Mutex<SmartOut<O>>>,
     ) -> anyhow::Result<()> {
         let buf = Self::read_object(&mut object).await?;
 
