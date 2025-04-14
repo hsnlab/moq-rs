@@ -1,7 +1,7 @@
 use std::sync::atomic;
 use std::{io::Cursor, sync::Arc};
 
-use crate::smartout::SmartWriter;
+use crate::smartout::{create_key, SmartWriter};
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
@@ -47,6 +47,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
 
 
             let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+            self.output.lock().await.add_subscriber(create_key(&track.info), subscribe_id, self.subscriber.clone());
 
             let mut subscriber = self.subscriber.clone();
             tokio::task::spawn(async move {
@@ -110,7 +111,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
                     .context("failed to create track")?;
 
                 let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-                self.output.lock().await.add_subscriber(subscribe_id, self.subscriber.clone());
+                self.output.lock().await.add_subscriber(create_key(&track.info), subscribe_id, self.subscriber.clone());
 
                 let mut subscriber = self.subscriber.clone();
                 tokio::task::spawn(async move {
@@ -160,7 +161,7 @@ impl<O: SmartWriter + Send + Unpin + 'static> Media<O> {
     async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<O>>) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
-        let key = out.lock().await.create_key(&group);
+        let key = create_key(&group);
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",

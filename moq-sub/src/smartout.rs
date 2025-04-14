@@ -1,11 +1,15 @@
 use std::collections::HashMap;
-use moq_transport::{message::SubscribePair, session::{SubscribeFilter, Subscriber}};
-use moq_transport::serve::{SubgroupInfo, SubgroupObjectReader};
+use moq_transport::{message::SubscribePair, serve::Track, session::{SubscribeFilter, Subscriber}};
+use moq_transport::serve::SubgroupObjectReader;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-pub trait SmartWriter {
-    fn create_key(&mut self, group: &SubgroupInfo) -> String;
+// TODO: I don't know whether it is considered to be a good practice
+// to use global functions (esp. exported ones) in Rust...
+pub fn create_key(track: &Track) -> String {
+    track.namespace.to_utf8_path() + ":" + &track.name
+}
 
+pub trait SmartWriter {
     fn write_object(
         &mut self,
         object: SubgroupObjectReader,
@@ -18,41 +22,42 @@ pub trait SmartWriter {
         object: SubgroupObjectReader,
         buf: &Vec<u8>,
     ) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
+
     fn add_subscriber(
         &mut self,
+        key: String,
         subscribe_id: u64,
         subscriber: Subscriber,
     );
 }
 
+struct TrackPlayoutStatus {
+    last_id: Option<(u64, u64)>,
+    subscribers: Vec<(u64, Subscriber)>,
+}
+
 pub struct SmartOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
-    largest_ids: HashMap<String, (u64, u64)>, // For each unique track
-    subscribers: Vec<(u64, Subscriber)>,
+    tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
     pub fn new(out: O) -> Self {
         Self {
             out,
-            largest_ids: HashMap::new(),
-            subscribers: Vec::new(),
+            tracks: HashMap::new(),
         }
     }
 
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
-    fn create_key(&mut self, group: &SubgroupInfo) -> String {
-        group.namespace.to_utf8_path() + ":" + &group.name
-    }
-
     async fn write_object(
         &mut self,
         object: SubgroupObjectReader,
         buf: &Vec<u8>,
     ) -> Result<(), std::io::Error> {
-        let key = self.create_key(&object.group);
+        let key = create_key(&object.group);
         return self.write_group_object(key, object, buf).await;
     }
 
@@ -65,17 +70,20 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
         let group_id = object.group_id;
         let object_id = object.object_id;
 
-        let id = &(group_id, object_id);
-        if let Some(largest_id) = self.largest_ids.get(&key) {
-            if id < largest_id { // Already seen this pair
-                return Ok(());
+        let id = (group_id, object_id);
+        if let Some(playout) = self.tracks.get(&key) {
+            if let Some(last_id) = playout.last_id {
+                if id <= last_id { // Already seen this pair
+                    return Ok(());
+                }
             }
         }
 
         self.out.write_all(&buf).await?;
-        self.largest_ids.insert(key, *id);
+        let playout = self.tracks.get_mut(&key).expect("trying to write object with no corresponding subscriptions");
+        playout.last_id = Some(id);
 
-        for (subscribe_id, subscriber) in &mut self.subscribers {
+        for (subscribe_id, subscriber) in &mut playout.subscribers {
             let _ = subscriber.subscribe_update(
                 *subscribe_id,
                 SubscribeFilter::AbsoluteStart(SubscribePair {
@@ -91,9 +99,14 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartWriter for SmartOut<O> {
 
     fn add_subscriber(
         self: &mut Self,
+        key: String,
         subscribe_id: u64,
         subscriber: Subscriber,
     ) {
-        self.subscribers.push((subscribe_id, subscriber));
+        if let Some(playout) = self.tracks.get_mut(&key) {
+            playout.subscribers.push((subscribe_id, subscriber));
+        } else {
+            self.tracks.insert(key, TrackPlayoutStatus{ last_id: None, subscribers: vec![(subscribe_id, subscriber)] });
+        }
     }
 }
