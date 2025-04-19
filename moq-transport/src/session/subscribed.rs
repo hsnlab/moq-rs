@@ -403,10 +403,13 @@ impl SubscribedRecv {
             state.priority = msg.subscriber_priority;
 
             let filter = SubscribeFilter::from(&msg);
+
             // Check for assumptions:
             //  - Subscriptions can only become more narrow, not wider
-            //  - A publisher SHOULD close the Session as a 'Protocol Violation'
-            //    if the SUBSCRIBE_UPDATE violates either rule [...]
+            //
+            // See: "A publisher SHOULD close the Session as a 'Protocol
+            //       Violation' if the SUBSCRIBE_UPDATE violates either
+            //       rule [...]"
             use SubscribeFilter::*;
             match (&state.filter, &filter) {
                 (AbsoluteStart(start_old), AbsoluteStart(start_new)) if start_old <= start_new => {
