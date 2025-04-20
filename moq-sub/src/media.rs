@@ -5,8 +5,8 @@ use crate::smartout::SmartOut;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
-    ServeError, SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode,
-    Tracks, TracksReader, TracksWriter,
+    ServeError, SubgroupObjectReader, SubgroupReader, TrackReader, TrackReaderMode, Tracks,
+    TracksReader, TracksWriter,
 };
 use moq_transport::session::{SubscribeFilter, Subscriber};
 use mp4::ReadBox;
@@ -14,6 +14,7 @@ use tokio::io::AsyncWrite;
 use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 
 pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
+    session_id: u64,
     subscriber: Subscriber,
     subscribe_next: Arc<atomic::AtomicU64>,
     broadcast: TracksReader,
@@ -23,6 +24,7 @@ pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
 
 impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
     pub async fn new(
+        session_id: u64,
         subscriber: Subscriber,
         tracks: Tracks,
         output: Arc<Mutex<SmartOut<O>>>,
@@ -30,6 +32,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         let (tracks_writer, _tracks_request, tracks_reader) = tracks.produce();
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
         Ok(Self {
+            session_id,
             subscriber,
             subscribe_next: Arc::new(atomic::AtomicU64::new(0)),
             broadcast,
@@ -46,9 +49,13 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                 .create(init_track_name)
                 .context("failed to create init track")?;
 
-
             let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-            self.output.lock().await.add_subscriber(SmartOut::<O>::create_key(&track.info), subscribe_id, self.subscriber.clone());
+            self.output.lock().await.add_subscriber(
+                SmartOut::<O>::create_key(&track.info),
+                self.session_id,
+                subscribe_id,
+                self.subscriber.clone(),
+            );
 
             let mut subscriber = self.subscriber.clone();
             tokio::task::spawn(async move {
@@ -73,7 +80,11 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
 
             let mut object = group.next().await?.context("no init fragment")?;
             let buf = Self::read_object(&mut object).await?;
-            self.output.lock().await.write_object(object, &buf).await?;
+            self.output
+                .lock()
+                .await
+                .write_object(self.session_id, object, &buf)
+                .await?;
             let mut reader = Cursor::new(&buf);
 
             let ftyp = read_atom(&mut reader).await?;
@@ -112,11 +123,15 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                     .context("failed to create track")?;
 
                 let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-                self.output.lock().await.add_subscriber(SmartOut::<O>::create_key(&track.info), subscribe_id, self.subscriber.clone());
+                self.output.lock().await.add_subscriber(
+                    SmartOut::<O>::create_key(&track.info),
+                    self.session_id,
+                    subscribe_id,
+                    self.subscriber.clone(),
+                );
 
                 let mut subscriber = self.subscriber.clone();
                 tokio::task::spawn(async move {
-
                     subscriber
                         .subscribe(Some(subscribe_id), track, SubscribeFilter::LatestObject)
                         .await
@@ -132,10 +147,11 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         info!("playing {} tracks", tracks.len());
         let mut tasks = JoinSet::new();
         for track in tracks {
+            let session_id = self.session_id;
             let out = self.output.clone();
             tasks.spawn(async move {
                 let name = track.name.clone();
-                if let Err(err) = Self::recv_track(track, out).await {
+                if let Err(err) = Self::recv_track(session_id, track, out).await {
                     warn!("failed to play track {name}: {err:?}");
                 }
             });
@@ -145,12 +161,16 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         //Ok(())
     }
 
-    async fn recv_track(track: TrackReader, out: Arc<Mutex<SmartOut<O>>>) -> anyhow::Result<()> {
+    async fn recv_track(
+        session_id: u64,
+        track: TrackReader,
+        out: Arc<Mutex<SmartOut<O>>>,
+    ) -> anyhow::Result<()> {
         let name = track.name.clone();
         debug!("track {name}: start");
         if let TrackReaderMode::Subgroups(mut groups) = track.mode().await? {
             while let Some(group) = groups.next().await? {
-                if let Err(err) = Self::recv_group(group, out.clone()).await {
+                if let Err(err) = Self::recv_group(session_id, group, out.clone()).await {
                     warn!("failed to receive group: {err:?}");
                 }
             }
@@ -159,7 +179,11 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         Ok(())
     }
 
-    async fn recv_group(mut group: SubgroupReader, out: Arc<Mutex<SmartOut<O>>>) -> anyhow::Result<()> {
+    async fn recv_group(
+        session_id: u64,
+        mut group: SubgroupReader,
+        out: Arc<Mutex<SmartOut<O>>>,
+    ) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
         let key = SmartOut::<O>::create_key(&group);
@@ -170,20 +194,24 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                 object.object_id
             );
 
-            Self::recv_object(key.clone(), object, out.clone()).await?;
+            Self::recv_object(session_id, key.clone(), object, out.clone()).await?;
         }
 
         Ok(())
     }
 
     async fn recv_object(
+        session_id: u64,
         key: String,
         mut object: SubgroupObjectReader,
         out: Arc<Mutex<SmartOut<O>>>,
     ) -> anyhow::Result<()> {
         let buf = Self::read_object(&mut object).await?;
 
-        out.lock().await.write_group_object(key, object, &buf).await?;
+        out.lock()
+            .await
+            .write_group_object(session_id, key, object, &buf)
+            .await?;
 
         Ok(())
     }

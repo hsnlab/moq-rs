@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use moq_native_ietf::quic;
-use moq_sub::media::Media;
 use moq_sub::smartout::SmartOut;
+use moq_sub::{media::Media, smartout::UpdateBasis};
 use moq_transport::{
     coding::Tuple,
     serve::Tracks,
@@ -21,9 +21,7 @@ use moq_transport::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::builder()
-        .format_timestamp_millis()
-        .init();
+    env_logger::builder().format_timestamp_millis().init();
 
     // Disable tracing so we don't get a bunch of Quinn spam.
     let tracer = tracing_subscriber::FmtSubscriber::builder()
@@ -31,9 +29,17 @@ async fn main() -> anyhow::Result<()> {
         .finish();
     tracing::subscriber::set_global_default(tracer).unwrap();
 
-    let out = Arc::new(Mutex::new(SmartOut::new(tokio::io::stdout())));
-
     let config = Config::parse();
+
+    let out = Arc::new(Mutex::new(SmartOut::new(tokio::io::stdout(), {
+        if let Some(n) = config.same_group_next_object {
+            UpdateBasis::SameGroupNextObject(n)
+        } else if let Some(n) = config.next_group_first_object {
+            UpdateBasis::NextGroupFirstObject(n)
+        } else {
+            UpdateBasis::SameGroupNextObject(1)
+        }
+    })));
 
     let namespace = Tuple::from_utf8_path(&config.name);
     let mut tasks = FuturesUnordered::new();
@@ -42,7 +48,8 @@ async fn main() -> anyhow::Result<()> {
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone()).await?;
         log::debug!("session {} started for url {:?}.", i, url);
-        let mut media = Media::new(subscriber, tracks, out.clone()).await?;
+        let session_id = i as u64; // workaround, since session.webtransport.0.session_id is private on multiple levels
+        let mut media = Media::new(session_id, subscriber, tracks, out.clone()).await?;
         tasks.push(tokio::spawn(async move {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));
@@ -100,6 +107,14 @@ pub struct Config {
     /// Connect to the given URL starting with https://
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
+
+    /// Use UpdateBasis::NextGroupFirstObject(n) with this value
+    #[arg(long)]
+    pub next_group_first_object: Option<u64>,
+
+    /// Use UpdateBasis::SameGroupNextObject(n) with this value
+    #[arg(long)]
+    pub same_group_next_object: Option<u64>,
 
     /// The name of the broadcast
     #[arg(long)]
