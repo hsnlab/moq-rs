@@ -1,5 +1,6 @@
 use std::{
     net::{self, SocketAddr},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -31,15 +32,18 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
-    let out = Arc::new(Mutex::new(SmartOut::new(tokio::io::stdout(), {
-        if let Some(n) = config.same_group_next_object {
-            UpdateBasis::SameGroupNextObject(n)
-        } else if let Some(n) = config.next_group_first_object {
-            UpdateBasis::NextGroupFirstObject(n)
-        } else {
-            UpdateBasis::SameGroupNextObject(1)
-        }
-    })));
+    let out = Arc::new(Mutex::new(SmartOut::new(
+        tokio::io::stdout(),
+        match config.skip_unit {
+            Some(SkipUnit::Object) => {
+                UpdateBasis::SameGroupNextObject(config.skip_ahead.unwrap_or(1))
+            }
+            Some(SkipUnit::Group) => {
+                UpdateBasis::NextGroupFirstObject(config.skip_ahead.unwrap_or(1))
+            }
+            _ => UpdateBasis::SameGroupNextObject(1),
+        },
+    )));
 
     let namespace = Tuple::from_utf8_path(&config.name);
     let mut tasks = FuturesUnordered::new();
@@ -98,23 +102,43 @@ async fn create_session(
     Ok((session, subscriber, tracks))
 }
 
+#[derive(Debug, Clone)]
+pub enum SkipUnit {
+    Object,
+    Group,
+}
+
+impl FromStr for SkipUnit {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "object" => Ok(Self::Object),
+            "group" => Ok(Self::Group),
+            _ => Err(format!("invalid skip unit: {}", s)),
+        }
+    }
+}
+
 #[derive(Parser, Clone)]
 pub struct Config {
     /// Listen for UDP packets on the given address.
     #[arg(long, default_value = "[::]:0")]
     pub bind: net::SocketAddr,
 
-    /// Connect to the given URL starting with https://
+    /// Establish WebTransport sessions to the given URLs starting with https://
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
 
-    /// Use UpdateBasis::NextGroupFirstObject(n) with this value
+    /// When using multipath, skip ahead by this number of objects or groups on all subscriptions,
+    /// except for the subscription where the new object arrived.
     #[arg(long)]
-    pub next_group_first_object: Option<u64>,
+    pub skip_ahead: Option<u64>,
 
-    /// Use UpdateBasis::SameGroupNextObject(n) with this value
+    /// When using multipath, specify the unit (object or group) to skip ahead by on all subscriptions,
+    /// except for the subscription where the new object arrived.
     #[arg(long)]
-    pub same_group_next_object: Option<u64>,
+    pub skip_unit: Option<SkipUnit>,
 
     /// The name of the broadcast
     #[arg(long)]
