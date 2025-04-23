@@ -20,7 +20,8 @@ struct TrackPlayoutStatus {
 }
 
 #[derive(Debug)]
-pub enum UpdateBasis {
+pub enum SkipMode {
+    Disabled,
     SameGroupNextObject(u64),
     NextGroupFirstObject(u64),
 }
@@ -28,11 +29,11 @@ pub enum UpdateBasis {
 pub struct SmartOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
     tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
-    basis: UpdateBasis,
+    basis: SkipMode,
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
-    pub fn new(out: O, basis: UpdateBasis) -> Self {
+    pub fn new(out: O, basis: SkipMode) -> Self {
         Self {
             out,
             tracks: HashMap::new(),
@@ -84,12 +85,16 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
             .expect("trying to write object with no corresponding subscriptions");
         playout.last_id = Some(id);
 
+        // Ask the relays of other sessesions to skip ahead and not to
+        // send objects we have recevied or about to receive.
+
         let next = match self.basis {
-            UpdateBasis::SameGroupNextObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
+            SkipMode::Disabled => return Ok(()),
+            SkipMode::SameGroupNextObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
                 group: group_id,
                 object: object_id + n,
             }),
-            UpdateBasis::NextGroupFirstObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
+            SkipMode::NextGroupFirstObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
                 group: group_id + n,
                 object: 0,
             }),

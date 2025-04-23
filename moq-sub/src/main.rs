@@ -1,6 +1,5 @@
 use std::{
     net::{self, SocketAddr},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -13,7 +12,7 @@ use url::Url;
 
 use moq_native_ietf::quic;
 use moq_sub::smartout::SmartOut;
-use moq_sub::{media::Media, smartout::UpdateBasis};
+use moq_sub::{media::Media, smartout::SkipMode};
 use moq_transport::{
     coding::Tuple,
     serve::Tracks,
@@ -34,14 +33,14 @@ async fn main() -> anyhow::Result<()> {
 
     let out = Arc::new(Mutex::new(SmartOut::new(
         tokio::io::stdout(),
-        match config.skip_unit {
-            Some(SkipUnit::Object) => {
-                UpdateBasis::SameGroupNextObject(config.skip_ahead.unwrap_or(1))
+        if config.skip_ahead == 0 {
+            SkipMode::Disabled
+        } else {
+            let n = config.skip_ahead;
+            match config.skip_unit {
+                SkipUnit::Object => SkipMode::SameGroupNextObject(n),
+                SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
             }
-            Some(SkipUnit::Group) => {
-                UpdateBasis::NextGroupFirstObject(config.skip_ahead.unwrap_or(1))
-            }
-            _ => UpdateBasis::SameGroupNextObject(1),
         },
     )));
 
@@ -102,22 +101,13 @@ async fn create_session(
     Ok((session, subscriber, tracks))
 }
 
-#[derive(Debug, Clone)]
+#[derive(clap::ValueEnum, Clone, Default, Debug)]
 pub enum SkipUnit {
+    /// Skip head SKIP_AHEAD objects within the current group.
     Object,
+    /// Skip head SKIP_AHEAD number of groups.
+    #[default]
     Group,
-}
-
-impl FromStr for SkipUnit {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "object" => Ok(Self::Object),
-            "group" => Ok(Self::Group),
-            _ => Err(format!("invalid skip unit: {}", s)),
-        }
-    }
 }
 
 #[derive(Parser, Clone)]
@@ -130,15 +120,18 @@ pub struct Config {
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
 
-    /// When using multipath, skip ahead by this number of objects or groups on all subscriptions,
-    /// except for the subscription where the new object arrived.
-    #[arg(long)]
-    pub skip_ahead: Option<u64>,
+    /// Try not to download this many units of data on other paths
+    ///
+    /// When moq-sub receives an object from a relay, it notifies
+    /// alternative relays not to send this object and other objects
+    /// about to be recieved from this relay.  See --skip-unit.
+    /// Default: disabled.
+    #[arg(long, default_value_t = 0)]
+    pub skip_ahead: u64,
 
-    /// When using multipath, specify the unit (object or group) to skip ahead by on all subscriptions,
-    /// except for the subscription where the new object arrived.
-    #[arg(long)]
-    pub skip_unit: Option<SkipUnit>,
+    /// The unit of --skip-ahead
+    #[clap(long, default_value_t, value_enum)]
+    pub skip_unit: SkipUnit,
 
     /// The name of the broadcast
     #[arg(long)]
