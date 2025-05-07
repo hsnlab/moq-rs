@@ -8,7 +8,13 @@ use std::collections::HashMap;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 struct TrackPlayoutStatus {
+    /// The Group ID and Object ID of the most recently received object if there were any.
     last_id: Option<(u64, u64)>,
+
+    /// The SubscribePair compromising the Group ID and the Object ID specified in the most
+    /// recent subscription update, and the Session ID of which session it was sent from.
+    last_update: Option<(SubscribePair, u64)>,
+
     // Given
     // - "A subscriber MUST NOT make multiple active subscriptions for a track within a single session [...]"
     // - "Subscribe ID is a variable length integer that MUST be unique [...]"
@@ -88,24 +94,59 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
         // Ask the relays of other sessesions to skip ahead and not to
         // send objects we have recevied or about to receive.
 
-        let next = match self.basis {
+        let current = SubscribePair {
+            group: group_id,
+            object: object_id,
+        };
+        let (next, next_filter) = match self.basis {
             SkipMode::Disabled => return Ok(()),
-            SkipMode::SameGroupNextObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
-                group: group_id,
-                object: object_id + n,
-            }),
-            SkipMode::NextGroupFirstObject(n) => SubscribeFilter::AbsoluteStart(SubscribePair {
-                group: group_id + n,
-                object: 0,
-            }),
+            SkipMode::SameGroupNextObject(n) => {
+                let next = SubscribePair {
+                    group: group_id,
+                    object: object_id + n,
+                };
+                (next.clone(), SubscribeFilter::AbsoluteStart(next))
+            }
+            SkipMode::NextGroupFirstObject(n) => {
+                let next = SubscribePair {
+                    group: group_id + n,
+                    object: 0,
+                };
+                (next.clone(), SubscribeFilter::AbsoluteStart(next))
+            },
         };
 
-        for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
-            if *session_id == sender_session_id {
-                continue;
-            }
+        // Sadly, Rust does not let me consolidate these arms
+        // Idea: extract the for loop with the updates to a function,
+        // and then call that same function in both cases...
+        //
+        //match &playout.last_update {
+        //    None => {}
+        //    Some((update_target, _)) if current >= *update_target => {}
+        //    Some((_, updater_session_id)) if *updater_session_id == sender_session_id => {}
+        //    _ => {}
+        //}
 
-            let _ = subscriber.subscribe_update(*subscribe_id, next.clone(), 127);
+        if let Some((update_target, updater_session_id)) = &playout.last_update {
+            if current >= *update_target || *updater_session_id == sender_session_id {
+                for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
+                    if *session_id == sender_session_id {
+                        continue;
+                    }
+
+                    let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
+                }
+                playout.last_update = Some((next, sender_session_id));
+            }
+        } else {
+            for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
+                if *session_id == sender_session_id {
+                    continue;
+                }
+
+                let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
+            }
+            playout.last_update = Some((next, sender_session_id));
         }
 
         Ok(())
@@ -127,6 +168,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
                 key,
                 TrackPlayoutStatus {
                     last_id: None,
+                    last_update: None,
                     subscribers: vec![(session_id, subscribe_id, subscriber)],
                 },
             );
