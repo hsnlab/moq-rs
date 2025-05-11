@@ -83,6 +83,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
             }
         }
 
+        log::trace!("received from {} for playout -> group_id: {}, subgroup_id: {}, object_id: {}", sender_session_id, object.group_id, object.subgroup_id, object.object_id);
         self.out.write_all(&buf).await?;
 
         let playout = self
