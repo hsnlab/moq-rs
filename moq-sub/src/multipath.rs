@@ -32,13 +32,13 @@ pub enum SkipMode {
     NextGroupFirstObject(u64),
 }
 
-pub struct SmartOut<O: AsyncWrite + Send + Unpin + 'static> {
+pub struct MultipathOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
     tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
     basis: SkipMode,
 }
 
-impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
+impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
     pub fn new(out: O, basis: SkipMode) -> Self {
         Self {
             out,
@@ -78,12 +78,25 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
             if let Some(last_id) = playout.last_id {
                 if id <= last_id {
                     // Already seen this pair
+                    log::trace!(
+                        "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
+                        sender_session_id,
+                        object.group_id,
+                        object.subgroup_id,
+                        object.object_id
+                    );
                     return Ok(());
                 }
             }
         }
 
-        log::trace!("received from {} for playout -> group_id: {}, subgroup_id: {}, object_id: {}", sender_session_id, object.group_id, object.subgroup_id, object.object_id);
+        log::trace!(
+            "object action: playout, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
+            sender_session_id,
+            object.group_id,
+            object.subgroup_id,
+            object.object_id
+        );
         self.out.write_all(&buf).await?;
 
         let playout = self
@@ -114,7 +127,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> SmartOut<O> {
                     object: 0,
                 };
                 (next.clone(), SubscribeFilter::AbsoluteStart(next))
-            },
+            }
         };
 
         // Sadly, Rust does not let me consolidate these arms

@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use moq_native_ietf::quic;
-use moq_sub::smartout::SmartOut;
-use moq_sub::{media::Media, smartout::SkipMode};
+use moq_sub::multipath::MultipathOut;
+use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
     coding::Tuple,
     serve::Tracks,
@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
-    let out = Arc::new(Mutex::new(SmartOut::new(
+    let out = Arc::new(Mutex::new(MultipathOut::new(
         tokio::io::stdout(),
         if config.skip_ahead == 0 {
             SkipMode::Disabled

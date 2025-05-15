@@ -1,7 +1,7 @@
 use std::sync::atomic;
 use std::{io::Cursor, sync::Arc};
 
-use crate::smartout::SmartOut;
+use crate::multipath::MultipathOut;
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
@@ -19,7 +19,7 @@ pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
     subscribe_next: Arc<atomic::AtomicU64>,
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
-    output: Arc<Mutex<SmartOut<O>>>,
+    output: Arc<Mutex<MultipathOut<O>>>,
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
@@ -27,7 +27,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         session_id: u64,
         subscriber: Subscriber,
         tracks: Tracks,
-        output: Arc<Mutex<SmartOut<O>>>,
+        output: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<Self> {
         let (tracks_writer, _tracks_request, tracks_reader) = tracks.produce();
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
@@ -51,7 +51,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
 
             let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
             self.output.lock().await.add_subscriber(
-                SmartOut::<O>::create_key(&track.info),
+                MultipathOut::<O>::create_key(&track.info),
                 self.session_id,
                 subscribe_id,
                 self.subscriber.clone(),
@@ -124,7 +124,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
 
                 let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
                 self.output.lock().await.add_subscriber(
-                    SmartOut::<O>::create_key(&track.info),
+                    MultipathOut::<O>::create_key(&track.info),
                     self.session_id,
                     subscribe_id,
                     self.subscriber.clone(),
@@ -164,7 +164,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
     async fn recv_track(
         session_id: u64,
         track: TrackReader,
-        out: Arc<Mutex<SmartOut<O>>>,
+        out: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<()> {
         let name = track.name.clone();
         debug!("track {name}: start");
@@ -182,11 +182,11 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
     async fn recv_group(
         session_id: u64,
         mut group: SubgroupReader,
-        out: Arc<Mutex<SmartOut<O>>>,
+        out: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
-        let key = SmartOut::<O>::create_key(&group);
+        let key = MultipathOut::<O>::create_key(&group);
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
@@ -204,7 +204,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         session_id: u64,
         key: String,
         mut object: SubgroupObjectReader,
-        out: Arc<Mutex<SmartOut<O>>>,
+        out: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<()> {
         let buf = Self::read_object(&mut object).await?;
 
