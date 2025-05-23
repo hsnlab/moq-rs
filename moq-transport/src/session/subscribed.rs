@@ -293,24 +293,12 @@ impl Subscribed {
         let filter = state.lock().filter.clone();
         if let SubscribeFilter::AbsoluteStart(SubscribePair {
             group: group_id,
-            object: object_id,
+            object: _,
         }) = filter
         {
             if subgroup.group_id < group_id {
                 log::trace!("skipping group {}", subgroup.group_id);
                 return Ok(());
-            } else if subgroup.group_id == group_id {
-                while let Some(object) = subgroup.peek().await? {
-                    if object.object_id >= object_id {
-                        break;
-                    }
-                    log::trace!(
-                        "skipping object {} of group {}",
-                        object.object_id,
-                        subgroup.group_id
-                    );
-                    subgroup.next().await?;
-                }
             }
         }
 
@@ -336,6 +324,29 @@ impl Subscribed {
                 size: object.size,
                 status: object.status,
             };
+
+            let filter = state.lock().filter.clone();
+            if let SubscribeFilter::AbsoluteStart(SubscribePair {
+                group: group_id,
+                object: object_id,
+            }) = filter
+            {
+                if subgroup.group_id < group_id {
+                    log::trace!("sent group done");
+                    log::trace!("skipping group {}", subgroup.group_id);
+                    return Ok(());
+                } else if subgroup.group_id == group_id {
+                    if object.object_id < object_id {
+                        log::trace!(
+                            "skipping object {} of group {}",
+                            object.object_id,
+                            subgroup.group_id
+                        );
+                        continue;
+                    }
+                }
+            }
+
 
             writer.encode(&header).await?;
 
