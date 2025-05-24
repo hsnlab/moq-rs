@@ -105,9 +105,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             .expect("trying to write object with no corresponding subscriptions");
         playout.last_id = Some(id);
 
-        // Ask the relays of other sessesions to skip ahead and not to
-        // send objects we have recevied or about to receive.
-
         let current = SubscribePair {
             group: group_id,
             object: object_id,
@@ -130,40 +127,29 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             }
         };
 
-        // Sadly, Rust does not let me consolidate these arms
-        // Idea: extract the for loop with the updates to a function,
-        // and then call that same function in both cases...
-        //
-        //match &playout.last_update {
-        //    None => {}
-        //    Some((update_target, _)) if current >= *update_target => {}
-        //    Some((_, updater_session_id)) if *updater_session_id == sender_session_id => {}
-        //    _ => {}
-        //}
+        // Ask the relays of other sessesions to skip ahead and not to
+        // send objects we have recevied or about to receive.
 
         if let Some((update_target, updater_session_id)) = &playout.last_update {
             if current >= *update_target || *updater_session_id == sender_session_id {
-                for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
-                    if *session_id == sender_session_id {
-                        continue;
-                    }
-
-                    let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
-                }
-                playout.last_update = Some((next, sender_session_id));
+                Self::subscribe_update(playout, sender_session_id, next, next_filter);
             }
         } else {
-            for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
-                if *session_id == sender_session_id {
-                    continue;
-                }
-
-                let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
-            }
-            playout.last_update = Some((next, sender_session_id));
+            Self::subscribe_update(playout, sender_session_id, next, next_filter);
         }
 
         Ok(())
+    }
+
+    fn subscribe_update(playout: &mut TrackPlayoutStatus, sender_session_id: u64, next: SubscribePair, next_filter: SubscribeFilter) {
+        for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
+            if *session_id == sender_session_id {
+                continue;
+            }
+
+            let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
+        }
+        playout.last_update = Some((next, sender_session_id));
     }
 
     pub fn add_subscriber(
