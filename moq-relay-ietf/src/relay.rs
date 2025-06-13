@@ -4,6 +4,7 @@ use anyhow::Context;
 
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use moq_native_ietf::quic;
+use moq_transport::session::ServingOptions;
 use url::Url;
 
 use crate::{Api, Consumer, Locals, Producer, Remotes, RemotesConsumer, RemotesProducer, Session};
@@ -24,6 +25,9 @@ pub struct RelayConfig {
     /// Our hostname which we advertise to other origins.
     /// We use QUIC, so the certificate must be valid for this address.
     pub node: Option<Url>,
+
+    /// Enable non-preemptive handling of subscription filtering.
+    pub non_preemptive_filtering: bool,
 }
 
 pub struct Relay {
@@ -32,6 +36,7 @@ pub struct Relay {
     locals: Locals,
     api: Option<Api>,
     remotes: Option<(RemotesProducer, RemotesConsumer)>,
+    serving_options: ServingOptions,
 }
 
 impl Relay {
@@ -65,6 +70,9 @@ impl Relay {
             api,
             locals,
             remotes,
+            serving_options: ServingOptions {
+                non_preemptive_filtering: config.non_preemptive_filtering
+            }
         })
     }
 
@@ -96,6 +104,7 @@ impl Relay {
                     publisher,
                     self.locals.clone(),
                     remotes.clone(),
+                    self.serving_options.clone(),
                 )),
                 consumer: Some(Consumer::new(subscriber, self.locals.clone(), None, None)),
             };
@@ -121,6 +130,7 @@ impl Relay {
                     let remotes = remotes.clone();
                     let forward = forward.clone();
                     let api = self.api.clone();
+                    let serving_options = self.serving_options.clone();
 
                     tasks.push(async move {
                         let (session, publisher, subscriber) = match moq_transport::session::Session::accept(conn).await {
@@ -133,7 +143,7 @@ impl Relay {
 
                         let session = Session {
                             session,
-                            producer: publisher.map(|publisher| Producer::new(publisher, locals.clone(), remotes)),
+                            producer: publisher.map(|publisher| Producer::new(publisher, locals.clone(), remotes, serving_options)),
                             consumer: subscriber.map(|subscriber| Consumer::new(subscriber, locals, api, forward)),
                         };
 

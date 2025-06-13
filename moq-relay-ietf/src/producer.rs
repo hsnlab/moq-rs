@@ -1,7 +1,7 @@
 use futures::{stream::FuturesUnordered, StreamExt};
 use moq_transport::{
     serve::{ServeError, TracksReader},
-    session::{Publisher, SessionError, Subscribed},
+    session::{Publisher, ServingOptions, SessionError, Subscribed},
 };
 
 use crate::{Locals, RemotesConsumer};
@@ -11,14 +11,16 @@ pub struct Producer {
     remote: Publisher,
     locals: Locals,
     remotes: Option<RemotesConsumer>,
+    serving_options: ServingOptions,
 }
 
 impl Producer {
-    pub fn new(remote: Publisher, locals: Locals, remotes: Option<RemotesConsumer>) -> Self {
+    pub fn new(remote: Publisher, locals: Locals, remotes: Option<RemotesConsumer>, serving_options: ServingOptions) -> Self {
         Self {
             remote,
             locals,
             remotes,
+            serving_options,
         }
     }
 
@@ -53,7 +55,7 @@ impl Producer {
         if let Some(mut local) = self.locals.route(&subscribe.namespace) {
             if let Some(track) = local.subscribe(&subscribe.name) {
                 log::info!("serving from local: {:?}", track.info);
-                return Ok(subscribe.serve(track).await?);
+                return Ok(subscribe.serve(track, self.serving_options).await?);
             }
         }
 
@@ -65,7 +67,7 @@ impl Producer {
                     log::info!("serving from remote: {:?} {:?}", remote.info, track.info);
 
                     // NOTE: Depends on drop(track) being called afterwards
-                    return Ok(subscribe.serve(track.reader).await?);
+                    return Ok(subscribe.serve(track.reader, self.serving_options).await?);
                 }
             }
         }
