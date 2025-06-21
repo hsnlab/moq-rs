@@ -103,9 +103,9 @@ async fn create_session(
 
 #[derive(clap::ValueEnum, Clone, Default, Debug)]
 pub enum SkipUnit {
-    /// Skip head SKIP_AHEAD objects within the current group.
+    /// Skip ahead SKIP_AHEAD objects within the current group.
     Object,
-    /// Skip head SKIP_AHEAD number of groups.
+    /// Skip ahead SKIP_AHEAD number of groups.
     #[default]
     Group,
 }

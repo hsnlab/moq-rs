@@ -15,6 +15,11 @@ struct TrackPlayoutStatus {
     /// recent subscription update, and the Session ID of which session it was sent from.
     last_update: Option<(SubscribePair, u64)>,
 
+    /// The number of distinct objects received in the context of this track.
+    n_unique: u64,
+    /// The number of duplicate objects received in the context of this track.
+    n_duplicate: u64,
+
     // Given
     // - "A subscriber MUST NOT make multiple active subscriptions for a track within a single session [...]"
     // - "Subscribe ID is a variable length integer that MUST be unique [...]"
@@ -74,21 +79,29 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         let object_id = object.object_id;
 
         let id = (group_id, object_id);
-        if let Some(playout) = self.tracks.get(&key) {
-            if let Some(last_id) = playout.last_id {
-                if id <= last_id {
-                    // Already seen this pair
-                    log::trace!(
-                        "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
-                        sender_session_id,
-                        object.group_id,
-                        object.subgroup_id,
-                        object.object_id
-                    );
-                    return Ok(());
-                }
+
+        let playout = self
+            .tracks
+            .get_mut(&key)
+            .expect("trying to write object with no corresponding subscriptions");
+
+        if let Some(last_id) = playout.last_id {
+            if id <= last_id {
+                // Already seen this pair
+                playout.n_duplicate += 1;
+                log::error!("dup: {}", playout.n_duplicate);
+                log::trace!(
+                    "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
+                    sender_session_id,
+                    object.group_id,
+                    object.subgroup_id,
+                    object.object_id
+                );
+                return Ok(());
             }
         }
+        playout.last_id = Some(id);
+        playout.n_unique += 1;
 
         log::trace!(
             "object action: playout, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
@@ -98,12 +111,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             object.object_id
         );
         self.out.write_all(&buf).await?;
-
-        let playout = self
-            .tracks
-            .get_mut(&key)
-            .expect("trying to write object with no corresponding subscriptions");
-        playout.last_id = Some(id);
 
         let current = SubscribePair {
             group: group_id,
@@ -169,6 +176,8 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 TrackPlayoutStatus {
                     last_id: None,
                     last_update: None,
+                    n_unique: 0,
+                    n_duplicate: 0,
                     subscribers: vec![(session_id, subscribe_id, subscriber)],
                 },
             );
