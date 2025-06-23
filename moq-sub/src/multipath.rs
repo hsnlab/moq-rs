@@ -41,14 +41,16 @@ pub struct MultipathOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
     tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
     basis: SkipMode,
+    non_preemptive_filtering: bool,
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
-    pub fn new(out: O, basis: SkipMode) -> Self {
+    pub fn new(out: O, basis: SkipMode, non_preemptive_filtering: bool) -> Self {
         Self {
             out,
             tracks: HashMap::new(),
             basis,
+            non_preemptive_filtering,
         }
     }
 
@@ -89,7 +91,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             if id <= last_id {
                 // Already seen this pair
                 playout.n_duplicate += 1;
-                log::error!("dup: {}", playout.n_duplicate);
                 log::trace!(
                     "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
                     sender_session_id,
@@ -139,22 +140,45 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
         if let Some((update_target, updater_session_id)) = &playout.last_update {
             if current >= *update_target || *updater_session_id == sender_session_id {
-                Self::subscribe_update(playout, sender_session_id, next, next_filter);
+                Self::subscribe_update(
+                    playout,
+                    sender_session_id,
+                    next,
+                    next_filter,
+                    self.non_preemptive_filtering,
+                );
             }
         } else {
-            Self::subscribe_update(playout, sender_session_id, next, next_filter);
+            Self::subscribe_update(
+                playout,
+                sender_session_id,
+                next,
+                next_filter,
+                self.non_preemptive_filtering,
+            );
         }
 
         Ok(())
     }
 
-    fn subscribe_update(playout: &mut TrackPlayoutStatus, sender_session_id: u64, next: SubscribePair, next_filter: SubscribeFilter) {
+    fn subscribe_update(
+        playout: &mut TrackPlayoutStatus,
+        sender_session_id: u64,
+        next: SubscribePair,
+        next_filter: SubscribeFilter,
+        non_preemptive_filtering: bool,
+    ) {
         for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
             if *session_id == sender_session_id {
                 continue;
             }
 
-            let _ = subscriber.subscribe_update(*subscribe_id, next_filter.clone(), 127);
+            let _ = subscriber.subscribe_update(
+                *subscribe_id,
+                next_filter.clone(),
+                non_preemptive_filtering,
+                127,
+            );
         }
         playout.last_update = Some((next, sender_session_id));
     }

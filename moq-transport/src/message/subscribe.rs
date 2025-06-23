@@ -146,3 +146,28 @@ impl Encode for SubscribePair {
         Ok(())
     }
 }
+
+pub enum SubscribeParam {
+    NonPreemptiveGroup = 0xB11E01,
+}
+
+impl Into<u64> for SubscribeParam {
+    fn into(self) -> u64 {
+        self as u64
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct EncodableDecodableNothing;
+
+impl Encode for EncodableDecodableNothing {
+    fn encode<W: bytes::BufMut>(&self, _w: &mut W) -> Result<(), EncodeError> {
+        Ok(())
+    }
+}
+
+impl Decode for EncodableDecodableNothing {
+    fn decode<B: bytes::Buf>(_buf: &mut B) -> Result<Self, DecodeError> {
+        Ok(EncodableDecodableNothing)
+    }
+}

@@ -96,7 +96,7 @@ impl Consumer {
                         let info = track.clone();
                         log::info!("forwarding subscribe: {:?}", info);
 
-                        if let Err(err) = remote.subscribe(None, track, SubscribeFilter::LatestObject).await {
+                        if let Err(err) = remote.subscribe(None, track, SubscribeFilter::LatestObject, false, 127).await {
                             log::warn!("failed forwarding subscribe: {:?}, error: {}", info, err)
                         }
 

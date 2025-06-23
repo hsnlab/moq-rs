@@ -22,7 +22,7 @@ pub struct SubscribeUpdate {
 }
 
 impl SubscribeUpdate {
-    pub fn new(mut subscriber: Subscriber, id: u64, filter: SubscribeFilter, priority: u8) -> Self {
+    pub fn new(mut subscriber: Subscriber, id: u64, filter: SubscribeFilter, subscriber_priority: u8, params: Params) -> Self {
         let (start, end_group) = match filter {
             SubscribeFilter::AbsoluteStart(start) => (start, 0),
             SubscribeFilter::AbsoluteRange(start, end_group) => (start, end_group),
@@ -39,8 +39,8 @@ impl SubscribeUpdate {
             id,
             start,
             end_group,
-            subscriber_priority: priority,
-            params: Params::new(),
+            subscriber_priority,
+            params,
         };
 
         subscriber.send_message(update.clone());

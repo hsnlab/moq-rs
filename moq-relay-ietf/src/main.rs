@@ -46,16 +46,6 @@ pub struct Cli {
     #[arg(long)]
     pub node: Option<Url>,
 
-    /// Enable non-preemptive handling of subscription filters.
-    /// When enabled, the relay will only check the subscription filter of
-    /// the subscription at the beginning of serving the subgroup. Consequently,
-    /// once serving a subgroup is started, the relay keeps serving its objects
-    /// no matter how the filter changes (even if that would otherwise prevent
-    /// the transmission of the rest of the group).
-    /// This behavior of the relay does not conform to the draft.
-    #[arg(long)]
-    pub non_preemptive_filtering: bool,
-
     /// Enable development mode.
     /// This hosts a HTTPS web server via TCP to serve the fingerprint of the certificate.
     #[arg(long)]
@@ -88,7 +78,6 @@ async fn main() -> anyhow::Result<()> {
         node: cli.node,
         api: cli.api,
         announce: cli.announce,
-        non_preemptive_filtering: cli.non_preemptive_filtering,
     })?;
 
     if cli.dev {

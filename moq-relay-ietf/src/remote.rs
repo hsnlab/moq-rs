@@ -234,7 +234,7 @@ impl RemoteProducer {
                     let mut subscriber = subscriber.clone();
 
                     tasks.push(async move {
-                        if let Err(err) = subscriber.subscribe(None, track, SubscribeFilter::LatestObject).await {
+                        if let Err(err) = subscriber.subscribe(None, track, SubscribeFilter::LatestObject, false, 127).await {
                             log::warn!("failed serving track: {:?}, error: {}", info, err);
                         }
                     });

@@ -15,7 +15,7 @@ use crate::{
 use crate::watch::Queue;
 
 use super::{
-    Announce, AnnounceRecv, ServingOptions, Session, SessionError, Subscribed, SubscribedRecv, TrackStatusRequested
+    Announce, AnnounceRecv, Session, SessionError, Subscribed, SubscribedRecv, TrackStatusRequested
 };
 
 // TODO remove Clone.
@@ -123,7 +123,7 @@ impl Publisher {
         mut tracks: TracksReader,
     ) -> Result<(), SessionError> {
         if let Some(track) = tracks.subscribe(&subscribe.name) {
-            subscribe.serve(track, ServingOptions::default()).await?;
+            subscribe.serve(track).await?;
         } else {
             subscribe.close(ServeError::NotFound)?;
         }

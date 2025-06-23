@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    coding::{Decode, Tuple},
+    coding::{Decode, Params, Tuple},
     data,
-    message::{self, Message, SubscribeUpdate},
+    message::{self, EncodableDecodableNothing, Message, SubscribeParam, SubscribeUpdate},
     serve::{self, ServeError},
     setup,
 };
@@ -63,10 +63,21 @@ impl Subscriber {
         id: Option<u64>,
         track: serve::TrackWriter,
         filter: SubscribeFilter,
+        non_preemptive_filtering: bool,
+        priority: u8,
     ) -> Result<(), ServeError> {
         let id = id.unwrap_or_else(|| self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed));
 
-        let (send, recv) = Subscribe::new(self.clone(), id, track, filter);
+        let mut params = Params::new();
+        if non_preemptive_filtering {
+            params
+                .set(
+                    SubscribeParam::NonPreemptiveGroup.into(),
+                    EncodableDecodableNothing,
+                )
+                .expect("nothing type could not be set as param value");
+        }
+        let (send, recv) = Subscribe::new(self.clone(), id, track, filter, priority, params);
         self.subscribes.lock().unwrap().insert(id, recv);
 
         send.closed().await
@@ -76,9 +87,19 @@ impl Subscriber {
         &mut self,
         id: u64,
         filter: SubscribeFilter,
+        non_preemptive_filtering: bool,
         priority: u8,
     ) -> Result<(), ServeError> {
-        let _update = SubscribeUpdate::new(self.clone(), id, filter, priority);
+        let mut params = Params::new();
+        if non_preemptive_filtering {
+            params
+                .set(
+                    SubscribeParam::NonPreemptiveGroup.into(),
+                    EncodableDecodableNothing,
+                )
+                .expect("nothing type could not be set as param value");
+        }
+        let _update = SubscribeUpdate::new(self.clone(), id, filter, priority, params);
         log::trace!("sent subscribe update");
 
         Ok(())
@@ -290,7 +311,11 @@ impl Subscriber {
         while !reader.done().await? {
             let object: data::SubgroupObject = reader.decode().await?;
 
-            log::trace!("received group object: {:?} group: {:?}", object, group.info);
+            log::trace!(
+                "received group object: {:?} group: {:?}",
+                object,
+                group.info
+            );
             let mut remain = object.size;
             let mut object = group.create(object.size, Some(object.object_id))?;
 

@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
                 SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
             }
         },
+        config.non_preemptive_filtering,
     )));
 
     let namespace = Tuple::from_utf8_path(&config.name);
@@ -132,6 +133,12 @@ pub struct Config {
     /// The unit of --skip-ahead
     #[clap(long, default_value_t, value_enum)]
     pub skip_unit: SkipUnit,
+
+    /// Request non-preemptive handling of subscription filters from relay(s).
+    /// This behavior of the relay does not conform to the draft, therefore,
+    /// this feature requires special relays to work.
+    #[arg(long)]
+    pub non_preemptive_filtering: bool,
 
     /// The name of the broadcast
     #[arg(long)]

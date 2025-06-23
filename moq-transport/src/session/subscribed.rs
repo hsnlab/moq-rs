@@ -4,7 +4,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
 use crate::coding::Encode;
-use crate::message::{SubscribePair, SubscribeUpdate};
+use crate::message::{EncodableDecodableNothing, SubscribePair, SubscribeParam, SubscribeUpdate};
 use crate::serve::{ServeError, TrackReaderMode};
 use crate::watch::State;
 use crate::{data, message, serve};
@@ -13,18 +13,32 @@ use super::{Publisher, SessionError, SubscribeFilter, SubscribeInfo, Writer};
 
 #[derive(Debug)]
 struct SubscribedState {
+    /// Maximum number of subscriptions the publisher can handle.
     max_group_id: Option<u64>,
+
+    /// Total number of streams opened during the subscriptions lifetime.
     stream_count: u64,
+
+    /// The active subscription filter initially set by the Subscribe message,
+    /// and later by SubscribeUpdate messages if any.
     filter: SubscribeFilter,
+
+    /// Enable non-preemptive handling of subscription filters.
+    /// When enabled, the publisher will only check the subscription filter of
+    /// the subscription at the beginning of serving the subgroup. Consequently,
+    /// once serving a subgroup is started, the relay keeps serving its objects
+    /// no matter how the filter changes (even if that would otherwise prevent
+    /// the transmission of the rest of the group).
+    /// This behavior of the relay does not conform to the draft.
+    non_preemptive_filtering: bool,
+
+    /// Subscription priority initially set by the Subscribe message,
+    /// and later by SubscribeUpdate messages if any.
     priority: u8,
+
+    /// Indicates whether this subscription has been closed already.
     closed: Result<(), ServeError>,
 }
-
-#[derive(Clone, Default)]
-pub struct ServingOptions {
-    pub non_preemptive_filtering: bool, // since we're deriving from `Default` this defaults to false
-}
-
 
 impl SubscribedState {
     fn update_max_group_id(&mut self, group_id: u64) -> Result<(), ServeError> {
@@ -49,6 +63,7 @@ impl Default for SubscribedState {
             max_group_id: None,
             stream_count: 0,
             filter: SubscribeFilter::LatestObject,
+            non_preemptive_filtering: false,
             priority: 127,
             closed: Ok(()),
         }
@@ -64,9 +79,16 @@ pub struct Subscribed {
 }
 
 impl Subscribed {
-    pub(super) fn new(publisher: Publisher, msg: message::Subscribe) -> (Self, SubscribedRecv) {
+    pub(super) fn new(publisher: Publisher, mut msg: message::Subscribe) -> (Self, SubscribedRecv) {
         let (send, recv) = State::new(SubscribedState {
             filter: SubscribeFilter::from(&msg),
+            non_preemptive_filtering: if let Ok(Some(EncodableDecodableNothing)) =
+                msg.params.get(SubscribeParam::NonPreemptiveGroup.into())
+            {
+                true
+            } else {
+                false
+            },
             ..Default::default()
         })
         .split();
@@ -77,11 +99,6 @@ impl Subscribed {
             name: msg.track_name.clone(),
             alias: msg.track_alias,
         };
-
-        if !msg.params.is_empty() {
-            // TODO: handle subscribe parameters
-            log::warn!("subscription parameters are not supported");
-        }
 
         let send = Self {
             publisher,
@@ -96,8 +113,8 @@ impl Subscribed {
         (send, recv)
     }
 
-    pub async fn serve(mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
-        let res = self.serve_inner(track, serving_options).await;
+    pub async fn serve(mut self, track: serve::TrackReader) -> Result<(), SessionError> {
+        let res = self.serve_inner(track).await;
         if let Err(err) = &res {
             self.close(err.clone().into())?;
         }
@@ -105,7 +122,7 @@ impl Subscribed {
         res
     }
 
-    async fn serve_inner(&mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
+    async fn serve_inner(&mut self, track: serve::TrackReader) -> Result<(), SessionError> {
         let latest = track.latest();
         self.state
             .lock_mut()
@@ -126,9 +143,9 @@ impl Subscribed {
 
         match track.mode().await? {
             // TODO cancel track/datagrams on closed
-            TrackReaderMode::Stream(stream) => self.serve_track(stream, serving_options).await,
-            TrackReaderMode::Subgroups(subgroups) => self.serve_subgroups(subgroups, serving_options).await,
-            TrackReaderMode::Datagrams(datagrams) => self.serve_datagrams(datagrams, serving_options).await,
+            TrackReaderMode::Stream(stream) => self.serve_track(stream).await,
+            TrackReaderMode::Subgroups(subgroups) => self.serve_subgroups(subgroups).await,
+            TrackReaderMode::Datagrams(datagrams) => self.serve_datagrams(datagrams).await,
         }
     }
 
@@ -197,7 +214,7 @@ impl Drop for Subscribed {
 }
 
 impl Subscribed {
-    async fn serve_track(&mut self, mut track: serve::StreamReader, _serving_options: ServingOptions) -> Result<(), SessionError> {
+    async fn serve_track(&mut self, mut track: serve::StreamReader) -> Result<(), SessionError> {
         let mut stream = self.publisher.open_uni().await?;
         self.state
             .lock_mut()
@@ -252,7 +269,6 @@ impl Subscribed {
     async fn serve_subgroups(
         &mut self,
         mut subgroups: serve::SubgroupsReader,
-        serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         let mut tasks = FuturesUnordered::new();
         let mut done: Option<Result<(), ServeError>> = None;
@@ -272,10 +288,9 @@ impl Subscribed {
                         let publisher = self.publisher.clone();
                         let state = self.state.clone();
                         let info = subgroup.info.clone();
-                        let serving_options = serving_options.clone();
 
                         tasks.push(async move {
-                            if let Err(err) = Self::serve_subgroup(header, subgroup, publisher, state, serving_options).await {
+                            if let Err(err) = Self::serve_subgroup(header, subgroup, publisher, state).await {
                                 log::warn!("failed to serve group: {:?}, error: {}", info, err);
                             }
                         });
@@ -295,7 +310,6 @@ impl Subscribed {
         mut subgroup: serve::SubgroupReader,
         mut publisher: Publisher,
         state: State<SubscribedState>,
-        serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         log::trace!("serving group {}", subgroup.group_id);
 
@@ -338,19 +352,24 @@ impl Subscribed {
                 status: object.status,
             };
 
-            if !serving_options.non_preemptive_filtering || !started_serving {
-                let filter = state.lock().filter.clone();
+            let (filter, non_preemptive_filtering) = {
+                let state = state.lock();
+                (state.filter.clone(), state.non_preemptive_filtering.clone())
+            };
+            if !non_preemptive_filtering || !started_serving {
                 if let SubscribeFilter::AbsoluteStart(SubscribePair {
                     group: group_id,
                     object: object_id,
                 }) = filter
                 {
-                    if subgroup.group_id < group_id { // subscription filter changed while serving
+                    if subgroup.group_id < group_id {
+                        // subscription filter changed while serving
                         log::trace!("sent group done");
                         log::trace!("skipping group {}", subgroup.group_id);
                         return Ok(());
                     } else if subgroup.group_id == group_id {
-                        if object.object_id < object_id { // reached the desired starting point
+                        if object.object_id < object_id {
+                            // reached the desired starting point
                             log::trace!(
                                 "skipping object {} of group {}",
                                 object.object_id,
@@ -363,7 +382,6 @@ impl Subscribed {
                     }
                 }
             }
-
 
             writer.encode(&header).await?;
 
@@ -388,7 +406,6 @@ impl Subscribed {
     async fn serve_datagrams(
         &mut self,
         mut datagrams: serve::DatagramsReader,
-        _serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         while let Some(datagram) = datagrams.read().await? {
             let datagram = data::Datagram {
@@ -423,7 +440,7 @@ pub(super) struct SubscribedRecv {
 }
 
 impl SubscribedRecv {
-    pub fn recv_subscribe_update(&mut self, msg: SubscribeUpdate) -> Result<(), ServeError> {
+    pub fn recv_subscribe_update(&mut self, mut msg: SubscribeUpdate) -> Result<(), ServeError> {
         let state = self.state.lock();
 
         if let Some(mut state) = state.into_mut() {
@@ -480,10 +497,13 @@ impl SubscribedRecv {
                 }
             };
 
-            if !msg.params.is_empty() {
-                // TODO: handle subscribe parameters
-                log::warn!("subscription parameters are not supported");
-            }
+            state.non_preemptive_filtering = if let Ok(Some(EncodableDecodableNothing)) =
+                msg.params.get(SubscribeParam::NonPreemptiveGroup.into())
+            {
+                true
+            } else {
+                false
+            };
         }
 
         Ok(())

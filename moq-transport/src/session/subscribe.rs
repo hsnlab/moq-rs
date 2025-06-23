@@ -1,7 +1,7 @@
 use std::ops;
 
 use crate::{
-    coding::Tuple,
+    coding::{Params, Tuple},
     data,
     message::{self, FilterType, GroupOrder, SubscribePair},
     serve::{self, ServeError, TrackWriter, TrackWriterMode},
@@ -103,6 +103,8 @@ impl Subscribe {
         id: u64,
         track: TrackWriter,
         filter: SubscribeFilter,
+        subscriber_priority: u8,
+        params: Params,
     ) -> (Subscribe, SubscribeRecv) {
         let (filter_type, start, end_group) = filter.clone().unwrap();
         subscriber.send_message(message::Subscribe {
@@ -111,12 +113,12 @@ impl Subscribe {
             track_namespace: track.namespace.clone(),
             track_name: track.name.clone(),
             // TODO add prioritization logic on the publisher side
-            subscriber_priority: 127, // default to mid value, see: https://github.com/moq-wg/moq-transport/issues/504
+            subscriber_priority,
             group_order: GroupOrder::Publisher, // defer to publisher send order
             filter_type,
             start,
             end_group,
-            params: Default::default(),
+            params,
         });
 
         let info = SubscribeInfo {
