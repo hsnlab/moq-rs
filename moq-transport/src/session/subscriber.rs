@@ -7,7 +7,7 @@ use std::{
 use crate::{
     coding::{Decode, Params, Tuple},
     data,
-    message::{self, EncodableDecodableNothing, Message, SubscribeParam, SubscribeUpdate},
+    message::{self, FlagParam, Message, SubscribeParam, SubscribeUpdate},
     serve::{self, ServeError},
     setup,
 };
@@ -69,14 +69,9 @@ impl Subscriber {
         let id = id.unwrap_or_else(|| self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed));
 
         let mut params = Params::new();
-        if non_preemptive_filtering {
-            params
-                .set(
-                    SubscribeParam::NonPreemptiveGroup.into(),
-                    EncodableDecodableNothing,
-                )
-                .expect("nothing type could not be set as param value");
-        }
+        params
+            .set(SubscribeParam::NonPreemptiveGroup.into(), FlagParam::from(non_preemptive_filtering))
+            .expect("nothing type could not be set as param value");
         let (send, recv) = Subscribe::new(self.clone(), id, track, filter, priority, params);
         self.subscribes.lock().unwrap().insert(id, recv);
 
@@ -91,14 +86,9 @@ impl Subscriber {
         priority: u8,
     ) -> Result<(), ServeError> {
         let mut params = Params::new();
-        if non_preemptive_filtering {
-            params
-                .set(
-                    SubscribeParam::NonPreemptiveGroup.into(),
-                    EncodableDecodableNothing,
-                )
-                .expect("nothing type could not be set as param value");
-        }
+        params
+            .set(SubscribeParam::NonPreemptiveGroup.into(), FlagParam::from(non_preemptive_filtering))
+            .expect("nothing type could not be set as param value");
         let _update = SubscribeUpdate::new(self.clone(), id, filter, priority, params);
         log::trace!("sent subscribe update");
 

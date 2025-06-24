@@ -158,16 +158,34 @@ impl Into<u64> for SubscribeParam {
 }
 
 #[derive(Clone, Copy)]
-pub struct EncodableDecodableNothing;
+pub struct FlagParam(bool);
 
-impl Encode for EncodableDecodableNothing {
-    fn encode<W: bytes::BufMut>(&self, _w: &mut W) -> Result<(), EncodeError> {
-        Ok(())
+impl Into<bool> for FlagParam {
+    fn into(self) -> bool {
+        self.0
     }
 }
 
-impl Decode for EncodableDecodableNothing {
-    fn decode<B: bytes::Buf>(_buf: &mut B) -> Result<Self, DecodeError> {
-        Ok(EncodableDecodableNothing)
+impl From<bool> for FlagParam {
+    fn from(value: bool) -> Self {
+        FlagParam(value)
+    }
+}
+
+impl Encode for FlagParam {
+    fn encode<W: bytes::BufMut>(&self, w: &mut W) -> Result<(), EncodeError> {
+        let value: u8 = if self.0 { 1 } else { 0 };
+        value.encode(w)
+    }
+}
+
+impl Decode for FlagParam {
+    fn decode<B: bytes::Buf>(buf: &mut B) -> Result<Self, DecodeError> {
+        let value = u8::decode(buf)?;
+        match value {
+            0 => Ok(FlagParam(false)),
+            1 => Ok(FlagParam(true)),
+            _ => Err(DecodeError::InvalidValue),
+        }
     }
 }

@@ -4,7 +4,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
 use crate::coding::Encode;
-use crate::message::{EncodableDecodableNothing, SubscribePair, SubscribeParam, SubscribeUpdate};
+use crate::message::{FlagParam, SubscribePair, SubscribeParam, SubscribeUpdate};
 use crate::serve::{ServeError, TrackReaderMode};
 use crate::watch::State;
 use crate::{data, message, serve};
@@ -82,12 +82,12 @@ impl Subscribed {
     pub(super) fn new(publisher: Publisher, mut msg: message::Subscribe) -> (Self, SubscribedRecv) {
         let (send, recv) = State::new(SubscribedState {
             filter: SubscribeFilter::from(&msg),
-            non_preemptive_filtering: if let Ok(Some(EncodableDecodableNothing)) =
-                msg.params.get(SubscribeParam::NonPreemptiveGroup.into())
+            non_preemptive_filtering: match msg
+                .params
+                .get::<FlagParam>(SubscribeParam::NonPreemptiveGroup.into())
             {
-                true
-            } else {
-                false
+                Ok(Some(flag_param)) => flag_param.into(),
+                _ => false,
             },
             ..Default::default()
         })
@@ -497,12 +497,12 @@ impl SubscribedRecv {
                 }
             };
 
-            state.non_preemptive_filtering = if let Ok(Some(EncodableDecodableNothing)) =
-                msg.params.get(SubscribeParam::NonPreemptiveGroup.into())
+            state.non_preemptive_filtering = match msg
+                .params
+                .get::<FlagParam>(SubscribeParam::NonPreemptiveGroup.into())
             {
-                true
-            } else {
-                false
+                Ok(Some(flag_param)) => flag_param.into(),
+                _ => false,
             };
         }
 
