@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use moq_native_ietf::quic;
-use moq_sub::multipath::MultipathOut;
+use moq_sub::{media::InitMode, multipath::MultipathOut};
 use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
     coding::Tuple,
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let namespace = Tuple::from_utf8_path(&config.name);
     let mut tasks = FuturesUnordered::new();
 
-    for (i, url) in config.urls.iter().enumerate() {
+    'url_probing: for (i, url) in config.urls.iter().enumerate() {
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone()).await?;
         log::debug!("session {} started for url {:?}.", i, url);
@@ -57,25 +57,29 @@ async fn main() -> anyhow::Result<()> {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));
         tasks.push(tokio::spawn(async move {
-            media.run().await.or_else(|e| Err(format!("{:?}", e)))
+            media.run(
+                if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) }
+            ).await.or_else(|e| Err(format!("{:?}", e)))
         }));
-    }
-
-    while let Some(finished_task) = tasks.next().await {
-        match finished_task {
-            Err(e) => {
-                log::error!("{:?}", e);
-            }
-            Ok(result) => {
-                log::debug!("Task result: {:?}", result);
-                if let Err(msg) = result {
-                    if msg == "Finished receiving the media" {
-                        break;
+        while let Some(finished_task) = tasks.next().await {
+            match finished_task {
+                Err(e) => {
+                    log::error!("round#{}, {:?}", i, e);
+                }
+                Ok(result) => {
+                    log::debug!("round#{}, task result: {:?}", i, result);
+                    if let Err(msg) = result {
+                        if msg == "Finished receiving the media" {
+                            break 'url_probing;
+                        }
                     }
+                    tasks.clear();
+                    break;
                 }
             }
         }
     }
+
 
     Ok(())
 }
