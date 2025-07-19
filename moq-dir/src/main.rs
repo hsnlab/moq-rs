@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use futures::{stream::FuturesUnordered, StreamExt};
 
+use core::time;
 use std::net;
 
 use moq_native_ietf::{quic, tls};
@@ -53,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let quic = quic::Endpoint::new(quic::Config {
         bind: cli.bind,
         tls,
+        idle_duration: time::Duration::from_millis(1000),
     })?;
     let mut quic = quic.server.context("missing server certificate")?;
 

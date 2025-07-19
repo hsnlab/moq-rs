@@ -1,3 +1,4 @@
+use core::time;
 use std::{
     net::{self, SocketAddr},
     sync::Arc,
@@ -49,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     'url_probing: for (i, url) in config.urls.iter().enumerate() {
         let (session, subscriber, tracks) =
-            create_session(&config.tls, config.bind, url, namespace.clone()).await?;
+            create_session(&config.tls, config.bind, url, namespace.clone(), config.idle_duration_ms).await?;
         log::debug!("session {} started for url {:?}.", i, url);
         let session_id = (i + 1) as u64; // workaround, since session.webtransport.0.session_id is private on multiple levels
         let mut media = Media::new(session_id, subscriber, tracks, out.clone()).await?;
@@ -89,9 +90,10 @@ async fn create_session(
     bind: SocketAddr,
     url: &Url,
     namespace: Tuple,
+    idle_duration_ms: u64,
 ) -> Result<(Session, Subscriber, Tracks), Error> {
     let tls = tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config { bind, tls })?;
+    let quic = quic::Endpoint::new(quic::Config { bind, tls, idle_duration: time::Duration::from_millis(idle_duration_ms) })?;
 
     let session = quic.client.connect(url).await?;
 
@@ -120,6 +122,14 @@ pub struct Config {
     #[arg(long, default_value = "[::]:0")]
     pub bind: net::SocketAddr,
 
+    /// The TLS configuration.
+    #[command(flatten)]
+    pub tls: moq_native_ietf::tls::Args,
+
+    /// Time to wait before concluding the idle connection as closed.
+    #[arg(long, default_value = "1000")]
+    pub idle_duration_ms: u64,
+
     /// Establish WebTransport sessions to the given URLs starting with https://
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
@@ -140,10 +150,6 @@ pub struct Config {
     /// The name of the broadcast
     #[arg(long)]
     pub name: String,
-
-    /// The TLS configuration.
-    #[command(flatten)]
-    pub tls: moq_native_ietf::tls::Args,
 }
 
 fn moq_url(s: &str) -> Result<Url, String> {

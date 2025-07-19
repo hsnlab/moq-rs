@@ -1,4 +1,5 @@
 use bytes::BytesMut;
+use core::time;
 use std::net;
 use url::Url;
 
@@ -61,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let quic = quic::Endpoint::new(moq_native_ietf::quic::Config {
         bind: cli.bind,
         tls: tls.clone(),
+        idle_duration: time::Duration::from_millis(1000),
     })?;
 
     log::info!("connecting to relay: url={}", cli.url);
