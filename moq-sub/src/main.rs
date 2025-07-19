@@ -32,23 +32,30 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
-    let out = Arc::new(Mutex::new(MultipathOut::new(
-        tokio::io::stdout(),
-        if config.skip_ahead == 0 {
-            SkipMode::Disabled
-        } else {
-            let n = config.skip_ahead;
-            match config.skip_unit {
-                SkipUnit::Object => SkipMode::SameGroupNextObject(n),
-                SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
-            }
-        },
-    )));
-
     let namespace = Tuple::from_utf8_path(&config.name);
-    let mut tasks = FuturesUnordered::new();
+    let skip_mode = if config.skip_ahead == 0 {
+        SkipMode::Disabled
+    } else {
+        let n = config.skip_ahead;
+        match config.skip_unit {
+            SkipUnit::Object => SkipMode::SameGroupNextObject(n),
+            SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
+        }
+    };
+
 
     'url_probing: for (i, url) in config.urls.iter().enumerate() {
+        let mut tasks = FuturesUnordered::new();
+        // Note: currently the multipath-enhanced output object doesn't make much sense for use in the reconnect
+        // strategy, but it's needed for compatibility with the media runner. Also, once it is merged with the
+        // multipath branch, it will be crucial to achieve a converged solution where multipath and reconnect
+        // co-exist to make MoQ resilient.
+        let out = Arc::new(Mutex::new(MultipathOut::new(
+            tokio::io::stdout(),
+            skip_mode.clone(),
+        )));
+
+        // Create a QUIC session and a corresponding media runner
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone(), config.idle_duration_ms).await?;
         log::debug!("session {} started for url {:?}.", i, url);
@@ -62,6 +69,8 @@ async fn main() -> anyhow::Result<()> {
                 if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) }
             ).await.or_else(|e| Err(format!("{:?}", e)))
         }));
+
+        // Wait for the media to finish or an error (e.g., connerr) to occur
         while let Some(finished_task) = tasks.next().await {
             match finished_task {
                 Err(e) => {
@@ -74,7 +83,6 @@ async fn main() -> anyhow::Result<()> {
                             break 'url_probing;
                         }
                     }
-                    tasks.clear();
                     break;
                 }
             }

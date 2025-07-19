@@ -30,7 +30,7 @@ struct TrackPlayoutStatus {
     subscribers: Vec<(u64, u64, Subscriber)>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SkipMode {
     Disabled,
     SameGroupNextObject(u64),
@@ -40,15 +40,15 @@ pub enum SkipMode {
 pub struct MultipathOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
     tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
-    basis: SkipMode,
+    skip_mode: SkipMode,
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
-    pub fn new(out: O, basis: SkipMode) -> Self {
+    pub fn new(out: O, skip_mode: SkipMode) -> Self {
         Self {
             out,
             tracks: HashMap::new(),
-            basis,
+            skip_mode,
         }
     }
 
@@ -116,7 +116,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             group: group_id,
             object: object_id,
         };
-        let (next, next_filter) = match self.basis {
+        let (next, next_filter) = match self.skip_mode {
             SkipMode::Disabled => return Ok(()),
             SkipMode::SameGroupNextObject(n) => {
                 let next = SubscribePair {
@@ -181,6 +181,20 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                     subscribers: vec![(session_id, subscribe_id, subscriber)],
                 },
             );
+        }
+    }
+
+    pub fn remove_subscriber(
+        self: &mut Self,
+        key: String,
+        session_id: u64,
+    ) {
+        if let Some(playout) = self.tracks.get_mut(&key) {
+            if let Some(index) = playout.subscribers.iter().position(
+                |(subscriber_session_id, _, _)| *subscriber_session_id == session_id
+            ) {
+                playout.subscribers.remove(index);
+            }
         }
     }
 }

@@ -16,6 +16,7 @@ use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
     session_id: u64,
     subscriber: Subscriber,
+    subscription_keys: Vec<String>,
     subscribe_next: Arc<atomic::AtomicU64>,
     broadcast: TracksReader,
     tracks_writer: TracksWriter,
@@ -39,6 +40,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         Ok(Self {
             session_id,
             subscriber,
+            subscription_keys: Vec::new(),
             subscribe_next: Arc::new(atomic::AtomicU64::new(0)),
             broadcast,
             tracks_writer,
@@ -59,8 +61,10 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                         .context("failed to create init track")?;
 
                     let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+                    let key = MultipathOut::<O>::create_key(&track.info);
+                    self.subscription_keys.push(key.clone());
                     self.output.lock().await.add_subscriber(
-                        MultipathOut::<O>::create_key(&track.info),
+                        key,
                         self.session_id,
                         subscribe_id,
                         self.subscriber.clone(),
@@ -131,8 +135,10 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                             .context("failed to create track")?;
 
                         let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
+                        let key = MultipathOut::<O>::create_key(&track.info);
+                        self.subscription_keys.push(key.clone());
                         self.output.lock().await.add_subscriber(
-                            MultipathOut::<O>::create_key(&track.info),
+                            key,
                             self.session_id,
                             subscribe_id,
                             self.subscriber.clone(),
@@ -159,40 +165,47 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                     .context("failed to create track")?;
 
                 let subscribe_id = self.subscribe_next.fetch_add(1, atomic::Ordering::Relaxed);
-                self.output.lock().await.add_subscriber(
-                    MultipathOut::<O>::create_key(&track.info),
-                    self.session_id,
-                    subscribe_id,
-                    self.subscriber.clone(),
-                );
+                    let key = MultipathOut::<O>::create_key(&track.info);
+                    self.subscription_keys.push(key.clone());
+                    self.output.lock().await.add_subscriber(
+                        key,
+                        self.session_id,
+                        subscribe_id,
+                        self.subscriber.clone(),
+                    );
 
-                let mut subscriber = self.subscriber.clone();
-                tokio::task::spawn(async move {
-                    subscriber
-                        .subscribe(Some(subscribe_id), track, SubscribeFilter::LatestObject)
-                        .await
-                        .unwrap_or_else(|err| {
-                            warn!("failed to subscribe to track: {err:?}");
-                        });
-                });
+                    let mut subscriber = self.subscriber.clone();
+                    tokio::task::spawn(async move {
+                        subscriber
+                            .subscribe(Some(subscribe_id), track, SubscribeFilter::LatestObject)
+                            .await
+                            .unwrap_or_else(|err| {
+                                warn!("failed to subscribe to track: {err:?}");
+                            });
+                    });
 
-                tracks.push(self.broadcast.subscribe(&name).context("no track")?);
+                    tracks.push(self.broadcast.subscribe(&name).context("no track")?);
+                }
             }
-        }
 
-        info!("playing {} tracks", tracks.len());
-        let mut tasks = JoinSet::new();
-        for track in tracks {
-            let session_id = self.session_id;
-            let out = self.output.clone();
-            tasks.spawn(async move {
-                let name = track.name.clone();
-                if let Err(err) = Self::recv_track(session_id, track, out).await {
+            info!("playing {} tracks", tracks.len());
+            let mut tasks = JoinSet::new();
+            for track in tracks {
+                let session_id = self.session_id;
+                let out = self.output.clone();
+                tasks.spawn(async move {
+                    let name = track.name.clone();
+                    if let Err(err) = Self::recv_track(session_id, track, out).await {
                     warn!("failed to play track {name}: {err:?}");
                 }
             });
         }
         while tasks.join_next().await.is_some() {}
+
+        for key in &self.subscription_keys {
+            self.output.lock().await.remove_subscriber(key.clone(), self.session_id);
+        }
+
         Err(anyhow::Error::msg("Finished receiving the media"))
             //Ok(())
     }
@@ -202,27 +215,29 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         track: TrackReader,
         out: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<()> {
-        let name = track.name.clone();
-        debug!("track {name}: start");
+        debug!("track {}: start", track.name);
+
+        let key = MultipathOut::<O>::create_key(&track.info);
         if let TrackReaderMode::Subgroups(mut groups) = track.mode().await? {
             while let Some(group) = groups.next().await? {
-                if let Err(err) = Self::recv_group(session_id, group, out.clone()).await {
+                if let Err(err) = Self::recv_group(session_id, key.clone(), group, out.clone()).await {
                     warn!("failed to receive group: {err:?}");
                 }
             }
         }
-        debug!("track {name}: finish");
+
+        debug!("track {}: finish", track.name);
         Ok(())
     }
 
     async fn recv_group(
         session_id: u64,
+        key: String,
         mut group: SubgroupReader,
         out: Arc<Mutex<MultipathOut<O>>>,
     ) -> anyhow::Result<()> {
         trace!("group={} start", group.group_id);
 
-        let key = MultipathOut::<O>::create_key(&group);
         while let Some(object) = group.next().await? {
             trace!(
                 "group={} fragment={} start",
