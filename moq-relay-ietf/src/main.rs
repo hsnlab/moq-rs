@@ -56,6 +56,14 @@ pub struct Cli {
     #[arg(long)]
     pub non_preemptive_filtering: bool,
 
+    /// Stop the relay if the number of streams opened for a given subscription
+    /// exceeds this value. The metric is the same as the Stream Count defined
+    /// by the draft.
+    ///
+    /// If nothing is given, the feature is disabled.
+    #[arg(long)]
+    pub stream_limit: Option<u64>,
+
     /// Enable development mode.
     /// This hosts a HTTPS web server via TCP to serve the fingerprint of the certificate.
     #[arg(long)]
@@ -88,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         node: cli.node,
         api: cli.api,
         announce: cli.announce,
+        stream_limit: cli.stream_limit,
         non_preemptive_filtering: cli.non_preemptive_filtering,
     })?;
 

@@ -1,4 +1,5 @@
 use std::ops;
+use std::process::exit;
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -22,6 +23,7 @@ struct SubscribedState {
 
 #[derive(Clone, Default)]
 pub struct ServingOptions {
+    pub stream_limit: Option<u64>,
     pub non_preemptive_filtering: bool, // since we're deriving from `Default` this defaults to false
 }
 
@@ -40,6 +42,9 @@ impl SubscribedState {
         self.stream_count += 1;
 
         Ok(())
+    }
+    fn stream_count(&self) -> u64 {
+        self.stream_count
     }
 }
 
@@ -312,10 +317,17 @@ impl Subscribed {
         }
 
         let mut stream = publisher.open_uni().await?;
-        state
-            .lock_mut()
-            .ok_or(ServeError::Done)?
-            .increment_stream_count()?;
+        {
+            let mut state = state.lock_mut().ok_or(ServeError::Done)?;
+            state.increment_stream_count()?;
+            if let Some(stream_limit) = serving_options.stream_limit {
+                if state.stream_count() > stream_limit {
+                    exit(1); // TODO: Shutting down the whole relay upon hitting
+                             // the stream_limit is a bit radical but is sufficient
+                             // for our purposes so I will leave it as it is for now.
+                }
+            }
+        }
 
         // TODO figure out u32 vs u64 priority
         stream.set_priority(subgroup.priority as i32);

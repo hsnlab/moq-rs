@@ -27,6 +27,9 @@ pub struct RelayConfig {
     /// We use QUIC, so the certificate must be valid for this address.
     pub node: Option<Url>,
 
+    // Shutdown the relay if a subscription attempts to open more streams.
+    pub stream_limit: Option<u64>,
+
     /// Enable non-preemptive handling of subscription filtering.
     pub non_preemptive_filtering: bool,
 }
@@ -73,6 +76,7 @@ impl Relay {
             locals,
             remotes,
             serving_options: ServingOptions {
+                stream_limit: config.stream_limit,
                 non_preemptive_filtering: config.non_preemptive_filtering
             }
         })
