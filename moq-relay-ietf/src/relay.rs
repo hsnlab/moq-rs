@@ -29,9 +29,6 @@ pub struct RelayConfig {
 
     // Shutdown the relay if a subscription attempts to open more streams.
     pub stream_limit: Option<u64>,
-
-    /// Enable non-preemptive handling of subscription filtering.
-    pub non_preemptive_filtering: bool,
 }
 
 pub struct Relay {
@@ -77,7 +74,6 @@ impl Relay {
             remotes,
             serving_options: ServingOptions {
                 stream_limit: config.stream_limit,
-                non_preemptive_filtering: config.non_preemptive_filtering
             }
         })
     }

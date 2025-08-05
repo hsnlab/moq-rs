@@ -24,7 +24,6 @@ struct SubscribedState {
 #[derive(Clone, Default)]
 pub struct ServingOptions {
     pub stream_limit: Option<u64>,
-    pub non_preemptive_filtering: bool, // since we're deriving from `Default` this defaults to false
 }
 
 
@@ -350,7 +349,7 @@ impl Subscribed {
                 status: object.status,
             };
 
-            if !serving_options.non_preemptive_filtering || !started_serving {
+            if !started_serving {
                 let filter = state.lock().filter.clone();
                 if let SubscribeFilter::AbsoluteStart(SubscribePair {
                     group: group_id,
