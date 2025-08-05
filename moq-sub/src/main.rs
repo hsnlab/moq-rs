@@ -109,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
                             break;
                         }
                     }
-                    break;
                 }
             }
         }
@@ -168,6 +167,8 @@ pub struct Config {
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
 
+    /// Whether to establish and use multiple connections simultaneously to
+    /// receive media.
     #[arg(long)]
     pub multipath: bool,
 
