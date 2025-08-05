@@ -1,4 +1,5 @@
 use std::ops;
+use std::process::exit;
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -40,6 +41,11 @@ struct SubscribedState {
     closed: Result<(), ServeError>,
 }
 
+#[derive(Clone, Default)]
+pub struct ServingOptions {
+    pub stream_limit: Option<u64>,
+}
+
 impl SubscribedState {
     fn update_max_group_id(&mut self, group_id: u64) -> Result<(), ServeError> {
         if let Some(max_group_id) = self.max_group_id {
@@ -54,6 +60,9 @@ impl SubscribedState {
         self.stream_count += 1;
 
         Ok(())
+    }
+    fn stream_count(&self) -> u64 {
+        self.stream_count
     }
 }
 
@@ -113,8 +122,8 @@ impl Subscribed {
         (send, recv)
     }
 
-    pub async fn serve(mut self, track: serve::TrackReader) -> Result<(), SessionError> {
-        let res = self.serve_inner(track).await;
+    pub async fn serve(mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
+        let res = self.serve_inner(track, serving_options).await;
         if let Err(err) = &res {
             self.close(err.clone().into())?;
         }
@@ -122,7 +131,7 @@ impl Subscribed {
         res
     }
 
-    async fn serve_inner(&mut self, track: serve::TrackReader) -> Result<(), SessionError> {
+    async fn serve_inner(&mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
         let latest = track.latest();
         self.state
             .lock_mut()
@@ -143,9 +152,9 @@ impl Subscribed {
 
         match track.mode().await? {
             // TODO cancel track/datagrams on closed
-            TrackReaderMode::Stream(stream) => self.serve_track(stream).await,
-            TrackReaderMode::Subgroups(subgroups) => self.serve_subgroups(subgroups).await,
-            TrackReaderMode::Datagrams(datagrams) => self.serve_datagrams(datagrams).await,
+            TrackReaderMode::Stream(stream) => self.serve_track(stream, serving_options).await,
+            TrackReaderMode::Subgroups(subgroups) => self.serve_subgroups(subgroups, serving_options).await,
+            TrackReaderMode::Datagrams(datagrams) => self.serve_datagrams(datagrams, serving_options).await,
         }
     }
 
@@ -214,7 +223,7 @@ impl Drop for Subscribed {
 }
 
 impl Subscribed {
-    async fn serve_track(&mut self, mut track: serve::StreamReader) -> Result<(), SessionError> {
+    async fn serve_track(&mut self, mut track: serve::StreamReader, _serving_options: ServingOptions) -> Result<(), SessionError> {
         let mut stream = self.publisher.open_uni().await?;
         self.state
             .lock_mut()
@@ -269,6 +278,7 @@ impl Subscribed {
     async fn serve_subgroups(
         &mut self,
         mut subgroups: serve::SubgroupsReader,
+        serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         let mut tasks = FuturesUnordered::new();
         let mut done: Option<Result<(), ServeError>> = None;
@@ -288,9 +298,10 @@ impl Subscribed {
                         let publisher = self.publisher.clone();
                         let state = self.state.clone();
                         let info = subgroup.info.clone();
+                        let serving_options = serving_options.clone();
 
                         tasks.push(async move {
-                            if let Err(err) = Self::serve_subgroup(header, subgroup, publisher, state).await {
+                            if let Err(err) = Self::serve_subgroup(header, subgroup, publisher, state, serving_options).await {
                                 log::warn!("failed to serve group: {:?}, error: {}", info, err);
                             }
                         });
@@ -310,6 +321,7 @@ impl Subscribed {
         mut subgroup: serve::SubgroupReader,
         mut publisher: Publisher,
         state: State<SubscribedState>,
+        serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         log::trace!("serving group {}", subgroup.group_id);
 
@@ -326,10 +338,17 @@ impl Subscribed {
         }
 
         let mut stream = publisher.open_uni().await?;
-        state
-            .lock_mut()
-            .ok_or(ServeError::Done)?
-            .increment_stream_count()?;
+        {
+            let mut state = state.lock_mut().ok_or(ServeError::Done)?;
+            state.increment_stream_count()?;
+            if let Some(stream_limit) = serving_options.stream_limit {
+                if state.stream_count() > stream_limit {
+                    exit(1); // TODO: Shutting down the whole relay upon hitting
+                             // the stream_limit is a bit radical but is sufficient
+                             // for our purposes so I will leave it as it is for now.
+                }
+            }
+        }
 
         // TODO figure out u32 vs u64 priority
         stream.set_priority(subgroup.priority as i32);
@@ -406,6 +425,7 @@ impl Subscribed {
     async fn serve_datagrams(
         &mut self,
         mut datagrams: serve::DatagramsReader,
+        _serving_options: ServingOptions,
     ) -> Result<(), SessionError> {
         while let Some(datagram) = datagrams.read().await? {
             let datagram = data::Datagram {
