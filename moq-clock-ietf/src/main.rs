@@ -1,4 +1,5 @@
 use moq_native_ietf::quic;
+use core::time;
 use std::net;
 use url::Url;
 
@@ -58,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let quic = quic::Endpoint::new(quic::Config {
         bind: config.bind,
         tls,
+        idle_duration: time::Duration::from_millis(1000),
     })?;
 
     log::info!("connecting to server: url={}", config.url);

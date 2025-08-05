@@ -16,8 +16,13 @@ pub struct Args {
     #[arg(long, default_value = "[::]:0")]
     pub bind: net::SocketAddr,
 
+    /// The TLS configuration.
     #[command(flatten)]
     pub tls: tls::Args,
+
+    // Time to wait before concluding the idle connection as closed.
+    #[arg(long, default_value = "1000")]
+    pub idle_duration_ms: u64,
 }
 
 impl Default for Args {
@@ -25,6 +30,7 @@ impl Default for Args {
         Self {
             bind: "[::]:0".parse().unwrap(),
             tls: Default::default(),
+            idle_duration_ms: 1000,
         }
     }
 }
@@ -35,6 +41,7 @@ impl Args {
         Ok(Config {
             bind: self.bind,
             tls,
+            idle_duration: time::Duration::from_millis(self.idle_duration_ms),
         })
     }
 }
@@ -42,6 +49,14 @@ impl Args {
 pub struct Config {
     pub bind: net::SocketAddr,
     pub tls: tls::Config,
+    pub idle_duration: time::Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        let args = Args::default();
+        args.load().expect("Couldn't use default arguments for config")
+    }
 }
 
 pub struct Endpoint {
@@ -51,13 +66,18 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn new(config: Config) -> anyhow::Result<Self> {
+        let mut transport = quinn::TransportConfig::default();
+
         // Enable BBR congestion control
         // TODO validate the implementation
-        let mut transport = quinn::TransportConfig::default();
-        transport.max_idle_timeout(Some(time::Duration::from_secs(10).try_into().unwrap()));
-        transport.keep_alive_interval(Some(time::Duration::from_secs(4))); // TODO make this smarter
         transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         transport.mtu_discovery_config(None); // Disable MTU discovery
+
+        let max_idle_timeout = config.idle_duration;
+        let keep_alive_interval = config.idle_duration / 3;
+        transport.max_idle_timeout(Some(max_idle_timeout.try_into().unwrap()));
+        transport.keep_alive_interval(Some(keep_alive_interval));
+
         let transport = Arc::new(transport);
 
         let mut server_config = None;

@@ -1,3 +1,4 @@
+use core::time;
 use std::net;
 
 use anyhow::Context;
@@ -40,6 +41,7 @@ impl Relay {
         let quic = quic::Endpoint::new(quic::Config {
             bind: config.bind,
             tls: config.tls,
+            idle_duration: time::Duration::from_millis(1000),
         })?;
 
         let api = if let (Some(url), Some(node)) = (config.api, config.node) {

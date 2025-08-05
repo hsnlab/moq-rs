@@ -1,3 +1,4 @@
+use core::time;
 use std::{
     net::{self, SocketAddr},
     sync::Arc,
@@ -11,7 +12,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use moq_native_ietf::quic;
-use moq_sub::multipath::MultipathOut;
+use moq_sub::{media::InitMode, multipath::MultipathOut};
 use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
     coding::Tuple,
@@ -31,26 +32,29 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
+    let namespace = Tuple::from_utf8_path(&config.name);
+    let skip_mode = if config.skip_ahead == 0 {
+        SkipMode::Disabled
+    } else {
+        let n = config.skip_ahead;
+        match config.skip_unit {
+            SkipUnit::Object => SkipMode::SameGroupNextObject(n),
+            SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
+        }
+    };
+
     let out = Arc::new(Mutex::new(MultipathOut::new(
         tokio::io::stdout(),
-        if config.skip_ahead == 0 {
-            SkipMode::Disabled
-        } else {
-            let n = config.skip_ahead;
-            match config.skip_unit {
-                SkipUnit::Object => SkipMode::SameGroupNextObject(n),
-                SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
-            }
-        },
+        skip_mode,
         config.non_preemptive_filtering,
     )));
 
-    let namespace = Tuple::from_utf8_path(&config.name);
     let mut tasks = FuturesUnordered::new();
 
-    for (i, url) in config.urls.iter().enumerate() {
+    'url_probing: for (i, url) in config.urls.iter().enumerate() {
+        // Create a QUIC session and a corresponding media runner
         let (session, subscriber, tracks) =
-            create_session(&config.tls, config.bind, url, namespace.clone()).await?;
+            create_session(&config.tls, config.bind, url, namespace.clone(), config.idle_duration_ms).await?;
         log::debug!("session {} started for url {:?}.", i, url);
         let session_id = (i + 1) as u64; // workaround, since session.webtransport.0.session_id is private on multiple levels
         let mut media = Media::new(session_id, subscriber, tracks, out.clone()).await?;
@@ -58,25 +62,59 @@ async fn main() -> anyhow::Result<()> {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));
         tasks.push(tokio::spawn(async move {
-            media.run().await.or_else(|e| Err(format!("{:?}", e)))
+            media.run(
+                if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) }
+            ).await.or_else(|e| Err(format!("{:?}", e)))
         }));
-    }
 
-    while let Some(finished_task) = tasks.next().await {
-        match finished_task {
-            Err(e) => {
-                log::error!("{:?}", e);
-            }
-            Ok(result) => {
-                log::debug!("Task result: {:?}", result);
-                if let Err(msg) = result {
-                    if msg == "Finished receiving the media" {
+        // Wait for the media to finish or an error (e.g., connerr) to occur
+        if !config.multipath {
+            while let Some(finished_task) = tasks.next().await {
+                match finished_task {
+                    Err(e) => {
+                        log::error!("round#{}, {:?}", i, e);
+                    }
+                    Ok(result) => {
+                        log::debug!("round#{}, task result: {:?}", i, result);
+                        if let Err(msg) = result {
+                            if msg == "Finished receiving the media" {
+                                break 'url_probing;
+                            }
+                        }
                         break;
                     }
                 }
             }
+
+            tasks.clear();
+
+            // Note: currently the multipath-enhanced output object doesn't make much sense for use in the reconnect
+            // strategy, but it's needed for compatibility with the media runner. Also, once it is merged with the
+            // multipath branch, it will be crucial to achieve a converged solution where multipath and reconnect
+            // co-exist to make MoQ resilient.
+            out.lock().await.clear_subscribers();
         }
     }
+
+    if config.multipath {
+        while let Some(finished_task) = tasks.next().await {
+            match finished_task {
+                Err(e) => {
+                    log::error!("multipath, {:?}", e);
+                }
+                Ok(result) => {
+                    log::debug!("multipath, task result: {:?}", result);
+                    if let Err(msg) = result {
+                        if msg == "Finished receiving the media" {
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
 
     Ok(())
 }
@@ -86,9 +124,10 @@ async fn create_session(
     bind: SocketAddr,
     url: &Url,
     namespace: Tuple,
+    idle_duration_ms: u64,
 ) -> Result<(Session, Subscriber, Tracks), Error> {
     let tls = tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config { bind, tls })?;
+    let quic = quic::Endpoint::new(quic::Config { bind, tls, idle_duration: time::Duration::from_millis(idle_duration_ms) })?;
 
     let session = quic.client.connect(url).await?;
 
@@ -117,9 +156,20 @@ pub struct Config {
     #[arg(long, default_value = "[::]:0")]
     pub bind: net::SocketAddr,
 
+    /// The TLS configuration.
+    #[command(flatten)]
+    pub tls: moq_native_ietf::tls::Args,
+
+    /// Time to wait before concluding the idle connection as closed.
+    #[arg(long, default_value = "1000")]
+    pub idle_duration_ms: u64,
+
     /// Establish WebTransport sessions to the given URLs starting with https://
     #[arg(value_parser = moq_url)]
     pub urls: Vec<Url>,
+
+    #[arg(long)]
+    pub multipath: bool,
 
     /// Try not to download this many units of data on other paths
     ///
@@ -143,10 +193,6 @@ pub struct Config {
     /// The name of the broadcast
     #[arg(long)]
     pub name: String,
-
-    /// The TLS configuration.
-    #[command(flatten)]
-    pub tls: moq_native_ietf::tls::Args,
 }
 
 fn moq_url(s: &str) -> Result<Url, String> {
