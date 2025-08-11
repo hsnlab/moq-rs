@@ -37,20 +37,25 @@ pub enum SkipMode {
     NextGroupFirstObject(u64),
 }
 
+#[derive(Clone, Debug)]
+pub struct MultipathOptions {
+    pub skip_mode: SkipMode,
+    pub non_preemptive_filtering: bool,
+    pub consolidated_updates: bool,
+}
+
 pub struct MultipathOut<O: AsyncWrite + Send + Unpin + 'static> {
     out: O,
     tracks: HashMap<String, TrackPlayoutStatus>, // For each unique track
-    skip_mode: SkipMode,
-    non_preemptive_filtering: bool,
+    options: MultipathOptions,
 }
 
 impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
-    pub fn new(out: O, skip_mode: SkipMode, non_preemptive_filtering: bool) -> Self {
+    pub fn new(out: O, options: MultipathOptions) -> Self {
         Self {
             out,
             tracks: HashMap::new(),
-            skip_mode,
-            non_preemptive_filtering,
+            options,
         }
     }
 
@@ -117,7 +122,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             group: group_id,
             object: object_id,
         };
-        let (next, next_filter) = match self.skip_mode {
+        let (next, next_filter) = match self.options.skip_mode {
             SkipMode::Disabled => return Ok(()),
             SkipMode::SameGroupNextObject(n) => {
                 let next = SubscribePair {
@@ -135,17 +140,23 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             }
         };
 
-        // Ask the relays of other sessesions to skip ahead and not to
-        // send objects we have recevied or about to receive.
+        // Ask the relays from other sessions to skip ahead and not to send
+        // objects we have already recevied or about to receive shortly.
 
         if let Some((update_target, updater_session_id)) = &playout.last_update {
-            if current >= *update_target || *updater_session_id == sender_session_id {
+            // Either the playout surpassed the prior update target, or we
+            // received the current object from the same relay as before, and
+            // we can send out the update while adhering to the options.
+            if current >= *update_target
+                || (*updater_session_id == sender_session_id
+                    && !(self.options.consolidated_updates && next == *update_target))
+            {
                 Self::subscribe_update(
                     playout,
                     sender_session_id,
                     next,
                     next_filter,
-                    self.non_preemptive_filtering,
+                    self.options.non_preemptive_filtering,
                 );
             }
         } else {
@@ -154,7 +165,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 sender_session_id,
                 next,
                 next_filter,
-                self.non_preemptive_filtering,
+                self.options.non_preemptive_filtering,
             );
         }
 
@@ -208,23 +219,19 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         }
     }
 
-    pub fn remove_subscriber(
-        self: &mut Self,
-        key: String,
-        session_id: u64,
-    ) {
+    pub fn remove_subscriber(self: &mut Self, key: String, session_id: u64) {
         if let Some(playout) = self.tracks.get_mut(&key) {
-            if let Some(index) = playout.subscribers.iter().position(
-                |(subscriber_session_id, _, _)| *subscriber_session_id == session_id
-            ) {
+            if let Some(index) = playout
+                .subscribers
+                .iter()
+                .position(|(subscriber_session_id, _, _)| *subscriber_session_id == session_id)
+            {
                 playout.subscribers.remove(index);
             }
         }
     }
 
-    pub fn clear_subscribers(
-        self: &mut Self,
-    ) {
+    pub fn clear_subscribers(self: &mut Self) {
         for playout in self.tracks.values_mut() {
             playout.subscribers.clear();
         }

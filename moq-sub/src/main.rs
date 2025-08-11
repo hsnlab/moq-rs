@@ -12,7 +12,10 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use moq_native_ietf::quic;
-use moq_sub::{media::InitMode, multipath::MultipathOut};
+use moq_sub::{
+    media::InitMode,
+    multipath::{MultipathOptions, MultipathOut},
+};
 use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
     coding::Tuple,
@@ -45,8 +48,11 @@ async fn main() -> anyhow::Result<()> {
 
     let out = Arc::new(Mutex::new(MultipathOut::new(
         tokio::io::stdout(),
-        skip_mode,
-        config.non_preemptive_filtering,
+        MultipathOptions {
+            skip_mode,
+            non_preemptive_filtering: config.non_preemptive_filtering,
+            consolidated_updates: config.consolidated_updates,
+        },
     )));
 
     let mut tasks = FuturesUnordered::new();
@@ -114,7 +120,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-
     Ok(())
 }
 
@@ -126,7 +131,11 @@ async fn create_session(
     idle_duration_ms: u64,
 ) -> Result<(Session, Subscriber, Tracks), Error> {
     let tls = tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config { bind, tls, idle_duration: time::Duration::from_millis(idle_duration_ms) })?;
+    let quic = quic::Endpoint::new(quic::Config {
+        bind,
+        tls,
+        idle_duration: time::Duration::from_millis(idle_duration_ms),
+    })?;
 
     let session = quic.client.connect(url).await?;
 
@@ -190,6 +199,11 @@ pub struct Config {
     /// this feature requires special relays to work.
     #[arg(long)]
     pub non_preemptive_filtering: bool,
+
+    /// Consolidate the amount of subscribe update messages sent by preventing
+    /// updates to the same target to be sent out more than once.
+    #[arg(long)]
+    pub consolidated_updates: bool,
 
     /// The name of the broadcast
     #[arg(long)]
