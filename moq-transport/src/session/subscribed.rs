@@ -1,8 +1,6 @@
-use std::ops;
-use std::process::exit;
-
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use std::ops;
 
 use crate::coding::Encode;
 use crate::message::{FlagParam, SubscribePair, SubscribeParam, SubscribeUpdate};
@@ -11,6 +9,8 @@ use crate::watch::State;
 use crate::{data, message, serve};
 
 use super::{Publisher, SessionError, SubscribeFilter, SubscribeInfo, Writer};
+
+const MAGIC: &[u8] = &0xF00DBABEF00DBABE_u64.to_be_bytes();
 
 #[derive(Debug)]
 struct SubscribedState {
@@ -122,7 +122,11 @@ impl Subscribed {
         (send, recv)
     }
 
-    pub async fn serve(mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
+    pub async fn serve(
+        mut self,
+        track: serve::TrackReader,
+        serving_options: ServingOptions,
+    ) -> Result<(), SessionError> {
         let res = self.serve_inner(track, serving_options).await;
         if let Err(err) = &res {
             self.close(err.clone().into())?;
@@ -131,7 +135,11 @@ impl Subscribed {
         res
     }
 
-    async fn serve_inner(&mut self, track: serve::TrackReader, serving_options: ServingOptions) -> Result<(), SessionError> {
+    async fn serve_inner(
+        &mut self,
+        track: serve::TrackReader,
+        serving_options: ServingOptions,
+    ) -> Result<(), SessionError> {
         let latest = track.latest();
         self.state
             .lock_mut()
@@ -153,8 +161,12 @@ impl Subscribed {
         match track.mode().await? {
             // TODO cancel track/datagrams on closed
             TrackReaderMode::Stream(stream) => self.serve_track(stream, serving_options).await,
-            TrackReaderMode::Subgroups(subgroups) => self.serve_subgroups(subgroups, serving_options).await,
-            TrackReaderMode::Datagrams(datagrams) => self.serve_datagrams(datagrams, serving_options).await,
+            TrackReaderMode::Subgroups(subgroups) => {
+                self.serve_subgroups(subgroups, serving_options).await
+            }
+            TrackReaderMode::Datagrams(datagrams) => {
+                self.serve_datagrams(datagrams, serving_options).await
+            }
         }
     }
 
@@ -223,7 +235,11 @@ impl Drop for Subscribed {
 }
 
 impl Subscribed {
-    async fn serve_track(&mut self, mut track: serve::StreamReader, _serving_options: ServingOptions) -> Result<(), SessionError> {
+    async fn serve_track(
+        &mut self,
+        mut track: serve::StreamReader,
+        _serving_options: ServingOptions,
+    ) -> Result<(), SessionError> {
         let mut stream = self.publisher.open_uni().await?;
         self.state
             .lock_mut()
@@ -338,22 +354,22 @@ impl Subscribed {
         }
 
         let mut stream = publisher.open_uni().await?;
-        {
-            let mut state = state.lock_mut().ok_or(ServeError::Done)?;
-            state.increment_stream_count()?;
-            if let Some(stream_limit) = serving_options.stream_limit {
-                if state.stream_count() > stream_limit {
-                    exit(1); // TODO: Shutting down the whole relay upon hitting
-                             // the stream_limit is a bit radical but is sufficient
-                             // for our purposes so I will leave it as it is for now.
-                }
-            }
-        }
-
-        // TODO figure out u32 vs u64 priority
-        stream.set_priority(subgroup.priority as i32);
+        stream.set_priority(subgroup.priority as i32); // TODO figure out u32 vs u64 priority
 
         let mut writer = Writer::new(stream);
+
+        let stream_count = {
+            let mut state = state.lock_mut().ok_or(ServeError::Done)?;
+            state.increment_stream_count()?;
+            state.stream_count()
+        };
+        if let Some(stream_limit) = serving_options.stream_limit {
+            if stream_count > stream_limit {
+                // Insert magic into payload that triggers immediate shutdown
+                // upon sending out the segment.
+                writer.write(MAGIC).await?;
+            }
+        }
 
         let gr_header: data::Header = header.into();
         writer.encode(&gr_header).await?;

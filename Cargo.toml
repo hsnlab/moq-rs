@@ -12,6 +12,10 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+quinn = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
+quinn-proto = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
+
 [workspace.dependencies]
 web-transport = "0.3"
 env_logger = "0.11"
