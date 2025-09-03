@@ -64,7 +64,7 @@ impl<T> State<T> {
         }
     }
 
-    pub fn lock(&self) -> StateRef<T> {
+    pub fn lock(&self) -> StateRef<'_, T> {
         StateRef {
             state: self.state.clone(),
             drop: self.drop.clone(),
@@ -72,7 +72,7 @@ impl<T> State<T> {
         }
     }
 
-    pub fn lock_mut(&self) -> Option<StateMut<T>> {
+    pub fn lock_mut(&self) -> Option<StateMut<'_, T>> {
         let lock = self.state.lock().unwrap();
         lock.dropped?;
         Some(StateMut {
