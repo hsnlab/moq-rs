@@ -22,7 +22,7 @@ impl Encode for FilterType {
 impl Decode for FilterType {
     fn decode<R: bytes::Buf>(r: &mut R) -> Result<Self, DecodeError> {
         match u64::decode(r)? {
-            0x02 => Ok(Self::LatestObject),
+            0x01 | 0x02 => Ok(Self::LatestObject),
             0x03 => Ok(Self::AbsoluteStart),
             0x04 => Ok(Self::AbsoluteRange),
             _ => Err(DecodeError::InvalidFilterType),
