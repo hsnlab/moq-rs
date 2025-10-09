@@ -13,8 +13,14 @@ members = [
 resolver = "2"
 
 [patch.crates-io]
-quinn = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
-quinn-proto = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
+# quinn = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
+quinn = { path = "../quinn/quinn/" }
+# quinn-proto = { git = "https://github.com/Zotyamester/quinn.git", branch = "stop-magic" }
+quinn-proto = { path = "../quinn/quinn-proto/" }
+web-transport = { path = "../web-transport-rs/web-transport/" }
+web-transport-proto = { path = "../web-transport-rs/web-transport-proto/" }
+web-transport-quinn = { path = "../web-transport-rs/web-transport-quinn/" }
+web-transport-wasm = { path = "../web-transport-rs/web-transport-wasm/" }
 
 [workspace.dependencies]
 web-transport = "0.3"

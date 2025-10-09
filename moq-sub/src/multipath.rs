@@ -27,7 +27,7 @@ struct TrackPlayoutStatus {
     // session).
     // However, to identify which session sent a certain object and consequently which sessions to update, we need to
     // store the artificial session IDs alongside, that the caller of write_group_object has to specify.
-    subscribers: Vec<(u64, u64, Subscriber)>,
+    subscribers: Vec<(u64, u64, moq_native_ietf::quic::Connection, Subscriber)>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +179,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         next_filter: SubscribeFilter,
         non_preemptive_filtering: bool,
     ) {
-        for (session_id, subscribe_id, subscriber) in &mut playout.subscribers {
+        for (session_id, subscribe_id, _connection, subscriber) in &mut playout.subscribers {
             if *session_id == sender_session_id {
                 continue;
             }
@@ -199,12 +199,14 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         key: String,
         session_id: u64,
         subscribe_id: u64,
+        connection: moq_native_ietf::quic::Connection,
         subscriber: Subscriber,
     ) {
+        let record = (session_id, subscribe_id, connection, subscriber);
         if let Some(playout) = self.tracks.get_mut(&key) {
             playout
                 .subscribers
-                .push((session_id, subscribe_id, subscriber));
+                .push(record);
         } else {
             self.tracks.insert(
                 key,
@@ -213,7 +215,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                     last_update: None,
                     n_unique: 0,
                     n_duplicate: 0,
-                    subscribers: vec![(session_id, subscribe_id, subscriber)],
+                    subscribers: vec![record],
                 },
             );
         }
@@ -224,7 +226,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             if let Some(index) = playout
                 .subscribers
                 .iter()
-                .position(|(subscriber_session_id, _, _)| *subscriber_session_id == session_id)
+                .position(|(subscriber_session_id, _, _, _)| *subscriber_session_id == session_id)
             {
                 playout.subscribers.remove(index);
             }

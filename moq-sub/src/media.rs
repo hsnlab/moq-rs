@@ -15,6 +15,7 @@ use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinSet};
 
 pub struct Media<O: AsyncWrite + Send + Unpin + 'static> {
     session_id: u64,
+    connection: moq_native_ietf::quic::Connection,
     subscriber: Subscriber,
     subscription_keys: Vec<String>,
     subscribe_next: Arc<atomic::AtomicU64>,
@@ -31,6 +32,7 @@ pub enum InitMode {
 impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
     pub async fn new(
         session_id: u64,
+        connection: moq_native_ietf::quic::Connection,
         subscriber: Subscriber,
         tracks: Tracks,
         output: Arc<Mutex<MultipathOut<O>>>,
@@ -39,6 +41,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         let broadcast = tracks_reader; // breadcrumb for navigating API name changes
         Ok(Self {
             session_id,
+            connection,
             subscriber,
             subscription_keys: Vec::new(),
             subscribe_next: Arc::new(atomic::AtomicU64::new(0)),
@@ -67,6 +70,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                         key,
                         self.session_id,
                         subscribe_id,
+                        self.connection.clone(),
                         self.subscriber.clone(),
                     );
 
@@ -141,6 +145,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                             key,
                             self.session_id,
                             subscribe_id,
+                            self.connection.clone(),
                             self.subscriber.clone(),
                         );
 
@@ -171,6 +176,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                         key,
                         self.session_id,
                         subscribe_id,
+                        self.connection.clone(),
                         self.subscriber.clone(),
                     );
 

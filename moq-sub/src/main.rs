@@ -62,8 +62,9 @@ async fn main() -> anyhow::Result<()> {
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone(), config.idle_duration_ms).await?;
         log::debug!("session {} started for url {:?}.", i, url);
-        let session_id = (i + 1) as u64; // workaround, since session.webtransport.0.session_id is private on multiple levels
-        let mut media = Media::new(session_id, subscriber, tracks, out.clone()).await?;
+        let session_id = (i + 1) as u64; // workaround as session.session_id() always gives 0 for some reason
+        let connection = session.connection();
+        let mut media = Media::new(session_id, connection, subscriber, tracks, out.clone()).await?;
         tasks.push(tokio::spawn(async move {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));

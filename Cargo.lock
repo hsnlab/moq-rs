@@ -1079,7 +1079,7 @@ dependencies = [
  "combine",
  "jni-sys",
  "log",
- "thiserror 1.0.69",
+ "thiserror",
  "walkdir",
 ]
 
@@ -1228,7 +1228,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "url",
 ]
@@ -1366,7 +1366,7 @@ dependencies = [
  "futures",
  "log",
  "paste",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "web-transport",
 ]
@@ -1382,7 +1382,7 @@ dependencies = [
  "num-rational",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
 ]
 
 [[package]]
@@ -1676,7 +1676,6 @@ dependencies = [
 [[package]]
 name = "quinn"
 version = "0.11.5"
-source = "git+https://github.com/Zotyamester/quinn.git?branch=stop-magic#4e86209649aa75030c20254e299181bb729ef352"
 dependencies = [
  "bytes",
  "pin-project-lite",
@@ -1685,7 +1684,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "rustls 0.23.31",
  "socket2 0.5.10",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "tracing",
 ]
@@ -1693,7 +1692,6 @@ dependencies = [
 [[package]]
 name = "quinn-proto"
 version = "0.11.8"
-source = "git+https://github.com/Zotyamester/quinn.git?branch=stop-magic#4e86209649aa75030c20254e299181bb729ef352"
 dependencies = [
  "bytes",
  "rand",
@@ -1702,7 +1700,7 @@ dependencies = [
  "rustls 0.23.31",
  "rustls-platform-verifier",
  "slab",
- "thiserror 1.0.69",
+ "thiserror",
  "tinyvec",
  "tracing",
 ]
@@ -1710,7 +1708,6 @@ dependencies = [
 [[package]]
 name = "quinn-udp"
 version = "0.5.4"
-source = "git+https://github.com/Zotyamester/quinn.git?branch=stop-magic#4e86209649aa75030c20254e299181bb729ef352"
 dependencies = [
  "libc",
  "once_cell",
@@ -2319,16 +2316,7 @@ version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
-version = "2.0.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b0949c3a6c842cbde3f1686d6eea5a010516deb7085f79db747562d4102f41e"
-dependencies = [
- "thiserror-impl 2.0.14",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2336,17 +2324,6 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "2.0.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc5b44b4ab9c2fdd0e0512e6bece8388e214c0749f5862b114cc5b7a25daf227"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2779,33 +2756,27 @@ dependencies = [
 
 [[package]]
 name = "web-transport"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4703a5ad424f8eca7860903b94f6ed747cf58bebba3081ede78e84493a12440c"
+version = "0.3.0"
 dependencies = [
  "bytes",
- "thiserror 1.0.69",
+ "thiserror",
  "web-transport-quinn",
  "web-transport-wasm",
 ]
 
 [[package]]
 name = "web-transport-proto"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1814af4572856a29a2d29a56520e86fda994423043b70139ce98e5a32e0d91be"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "http",
- "thiserror 2.0.14",
+ "thiserror",
  "url",
 ]
 
 [[package]]
 name = "web-transport-quinn"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3020b51cda10472a365e42d9a701916d4f04d74cc743de08246ef6a421c2d137"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "futures",
@@ -2813,7 +2784,7 @@ dependencies = [
  "log",
  "quinn",
  "quinn-proto",
- "thiserror 1.0.69",
+ "thiserror",
  "tokio",
  "url",
  "web-transport-proto",
@@ -2821,9 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "web-transport-wasm"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66e8f572ad133af04a5aa4a207d48d3f6a2f1f3006aa1b8f0d774d28c085d699"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "js-sys",

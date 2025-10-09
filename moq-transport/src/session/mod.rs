@@ -65,6 +65,15 @@ impl Session {
         (session, publisher, subscriber)
     }
 
+    pub fn stats(&self) -> web_transport::ConnectionStats {
+        self.webtransport.stats()
+    }
+
+    pub fn connection(&self) -> web_transport::Connection {
+        self.webtransport.connection()
+    }
+
+
     pub async fn connect(
         session: web_transport::Session,
     ) -> Result<(Session, Publisher, Subscriber), SessionError> {

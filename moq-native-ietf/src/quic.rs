@@ -10,6 +10,8 @@ use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
+pub use web_transport::Connection;
+
 #[derive(Parser, Clone)]
 pub struct Args {
     /// Listen for UDP packets on the given address.
