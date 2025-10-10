@@ -27,8 +27,12 @@ pub struct RelayConfig {
     /// We use QUIC, so the certificate must be valid for this address.
     pub node: Option<Url>,
 
-    // Shutdown the relay if a subscription attempts to open more streams.
+    /// Shutdown the relay if a subscription attempts to open more streams.
     pub stream_limit: Option<u64>,
+
+    /// Shutdown the relay before a subscription starts serving groups with a
+    /// Group ID greater than or equal to this value.
+    pub max_group_id: Option<u64>,
 }
 
 pub struct Relay {
@@ -74,6 +78,7 @@ impl Relay {
             remotes,
             serving_options: ServingOptions {
                 stream_limit: config.stream_limit,
+                max_group_id: config.max_group_id,
             }
         })
     }

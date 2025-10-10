@@ -44,6 +44,7 @@ struct SubscribedState {
 #[derive(Clone, Default)]
 pub struct ServingOptions {
     pub stream_limit: Option<u64>,
+    pub max_group_id: Option<u64>,
 }
 
 impl SubscribedState {
@@ -363,10 +364,16 @@ impl Subscribed {
             state.increment_stream_count()?;
             state.stream_count()
         };
+
+        // If either we hit the limit for the max no. of streams or reached the max Group ID,
+        // insert magic into payload that triggers immediate shutdown upon sending out the segment.
         if let Some(stream_limit) = serving_options.stream_limit {
             if stream_count > stream_limit {
-                // Insert magic into payload that triggers immediate shutdown
-                // upon sending out the segment.
+                writer.write(MAGIC).await?;
+            }
+        }
+        if let Some(max_group_id) = serving_options.max_group_id {
+            if subgroup.group_id >= max_group_id  {
                 writer.write(MAGIC).await?;
             }
         }

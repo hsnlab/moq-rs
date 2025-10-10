@@ -54,6 +54,16 @@ pub struct Cli {
     #[arg(long)]
     pub stream_limit: Option<u64>,
 
+    /// Shutdown the relay before a subscription starts serving groups with a
+    /// Group ID greater than or equal to this value.
+
+    /// Stop the relay when the group to be served for a given subscription has
+    /// a higher Group ID than this value.
+    ///
+    /// If nothing is given, the feature is disabled.
+    #[arg(long)]
+    pub max_group_id: Option<u64>,
+
     /// Enable development mode.
     /// This hosts a HTTPS web server via TCP to serve the fingerprint of the certificate.
     #[arg(long)]
@@ -87,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         api: cli.api,
         announce: cli.announce,
         stream_limit: cli.stream_limit,
+        max_group_id: cli.max_group_id,
     })?;
 
     if cli.dev {
