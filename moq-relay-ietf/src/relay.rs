@@ -33,6 +33,7 @@ pub struct RelayConfig {
     /// Shutdown the relay before a subscription starts serving groups with a
     /// Group ID greater than or equal to this value.
     pub max_group_id: Option<u64>,
+    pub max_object_id: Option<u64>,
 }
 
 pub struct Relay {
@@ -79,6 +80,7 @@ impl Relay {
             serving_options: ServingOptions {
                 stream_limit: config.stream_limit,
                 max_group_id: config.max_group_id,
+                max_object_id: config.max_object_id,
             }
         })
     }

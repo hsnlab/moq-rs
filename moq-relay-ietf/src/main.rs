@@ -46,7 +46,7 @@ pub struct Cli {
     #[arg(long)]
     pub node: Option<Url>,
 
-    /// Stop the relay if the number of streams opened for a given subscription
+    /// Stop the relay when the number of streams opened for a given subscription
     /// exceeds this value. The metric is the same as the Stream Count defined
     /// by the draft.
     ///
@@ -54,15 +54,23 @@ pub struct Cli {
     #[arg(long)]
     pub stream_limit: Option<u64>,
 
-    /// Shutdown the relay before a subscription starts serving groups with a
-    /// Group ID greater than or equal to this value.
-
     /// Stop the relay when the group to be served for a given subscription has
     /// a higher Group ID than this value.
     ///
     /// If nothing is given, the feature is disabled.
+    ///
+    /// In conjunction with --max-object-id, only stops if both criteria are met.
     #[arg(long)]
     pub max_group_id: Option<u64>,
+
+    /// Stop the relay when the group to be served for a given subscription has
+    /// a higher Object ID than this value.
+    ///
+    /// If nothing is given, the feature is disabled.
+    ///
+    /// In conjunction with --max-group-id, only stops if both criteria are met.
+    #[arg(long)]
+    pub max_object_id: Option<u64>,
 
     /// Enable development mode.
     /// This hosts a HTTPS web server via TCP to serve the fingerprint of the certificate.
@@ -98,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         announce: cli.announce,
         stream_limit: cli.stream_limit,
         max_group_id: cli.max_group_id,
+        max_object_id: cli.max_object_id,
     })?;
 
     if cli.dev {

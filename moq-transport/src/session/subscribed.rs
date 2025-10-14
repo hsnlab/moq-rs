@@ -45,6 +45,7 @@ struct SubscribedState {
 pub struct ServingOptions {
     pub stream_limit: Option<u64>,
     pub max_group_id: Option<u64>,
+    pub max_object_id: Option<u64>,
 }
 
 impl SubscribedState {
@@ -372,11 +373,6 @@ impl Subscribed {
                 writer.write(MAGIC).await?;
             }
         }
-        if let Some(max_group_id) = serving_options.max_group_id {
-            if subgroup.group_id >= max_group_id  {
-                writer.write(MAGIC).await?;
-            }
-        }
 
         let gr_header: data::Header = header.into();
         writer.encode(&gr_header).await?;
@@ -393,6 +389,13 @@ impl Subscribed {
                 size: object.size,
                 status: object.status,
             };
+
+            match (serving_options.max_group_id, serving_options.max_object_id) {
+                (Some(max_group_id), Some(max_object_id)) if object.group_id >= max_group_id && object.object_id >= max_object_id => writer.write(MAGIC).await?,
+                (Some(max_group_id), None) if object.group_id >= max_group_id => writer.write(MAGIC).await?,
+                (None, Some(max_object_id)) if object.object_id >= max_object_id => writer.write(MAGIC).await?,
+                _ => {}
+            }
 
             let (filter, non_preemptive_filtering) = {
                 let state = state.lock();
