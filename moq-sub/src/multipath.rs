@@ -11,15 +11,13 @@ struct TrackPlayoutStatus {
     /// The Group ID and Object ID of the most recently received object if there were any.
     last_id: Option<(u64, u64)>,
 
-    /// The SubscribePair compromising the Group ID and the Object ID specified in the most
-    /// recent subscription update, and the Session ID of which session it was sent from.
-    last_update: Option<(SubscribePair, u64)>,
-
-    /// The number of distinct objects received in the context of this track.
+    /// The total number of distinct objects received.
     n_unique: u64,
-    /// The number of duplicate objects received in the context of this track.
-    n_duplicate: u64,
 
+    subscriptions: HashMap<u64, Subscription>,
+}
+
+pub struct Subscription {
     // Given
     // - "A subscriber MUST NOT make multiple active subscriptions for a track within a single session [...]"
     // - "Subscribe ID is a variable length integer that MUST be unique [...]"
@@ -27,7 +25,23 @@ struct TrackPlayoutStatus {
     // session).
     // However, to identify which session sent a certain object and consequently which sessions to update, we need to
     // store the artificial session IDs alongside, that the caller of write_group_object has to specify.
-    subscribers: Vec<(u64, u64, moq_native_ietf::quic::Connection, Subscriber)>,
+
+    /// Artificial session ID created by the moq-sub. Note, this is not the same as the session ID used by QUIC/WebTransport.
+    session_id: u64,
+    /// Subscribe ID used between the subscriber and a relay
+    subscribe_id: u64,
+    /// The underlying QUIC connection of this subscription.
+    connection: moq_native_ietf::quic::Connection,
+    /// Subscriber providing the subscription.
+    subscriber: Subscriber,
+    /// Failover method to be used for this subscription.
+    failover_method: FailoverMethod,
+
+    /// The SubscribePair compromising the Group ID and the Object ID specified in the most
+    /// recent subscription update, and the Session ID of which session it was sent from.
+    last_update: Option<(SubscribePair, u64)>,
+    /// The number of duplicate objects received from this subscription.
+    n_duplicate: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -38,8 +52,20 @@ pub enum SkipMode {
 }
 
 #[derive(Clone, Debug)]
+pub enum FailoverMethod {
+    /// Static mode uses a fixed skip mode throughout the track given as a parameter.
+    Static(SkipMode),
+    /// Dynamically changes the skip mode according to the relation of the proportion of duplicates to the total number
+    /// of objects and a fixed threshold value given as a paramter.
+    ///
+    /// The threshold must be a floating point number between 0 and 1.
+    DynamicThreshold(f64),
+    /// Dynamically adapts to the environment observed through QUIC statistics.
+    DynamicAdaptive,
+}
+
+#[derive(Clone, Debug)]
 pub struct MultipathOptions {
-    pub skip_mode: SkipMode,
     pub non_preemptive_filtering: bool,
     pub consolidated_updates: bool,
 }
@@ -90,12 +116,16 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         let playout = self
             .tracks
             .get_mut(&key)
-            .expect("trying to write object with no corresponding subscriptions");
+            .expect("write object of a track with active subscriptions");
+
+        let subscription = playout
+            .subscriptions
+            .get_mut(&sender_session_id)
+            .expect("sender session ID corresponds to an existent subscription");
 
         if let Some(last_id) = playout.last_id {
             if id <= last_id {
                 // Already seen this pair
-                playout.n_duplicate += 1;
                 log::trace!(
                     "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
                     sender_session_id,
@@ -103,6 +133,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                     object.subgroup_id,
                     object.object_id
                 );
+                subscription.n_duplicate += 1;
                 return Ok(());
             }
         }
@@ -122,76 +153,79 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             group: group_id,
             object: object_id,
         };
-        let (next, next_filter) = match self.options.skip_mode {
-            SkipMode::Disabled => return Ok(()),
-            SkipMode::SameGroupNextObject(n) => {
-                let next = SubscribePair {
-                    group: group_id,
-                    object: object_id + n,
-                };
-                (next.clone(), SubscribeFilter::AbsoluteStart(next))
-            }
-            SkipMode::NextGroupFirstObject(n) => {
-                let next = SubscribePair {
-                    group: group_id + n,
-                    object: 0,
-                };
-                (next.clone(), SubscribeFilter::AbsoluteStart(next))
-            }
-        };
 
         // Ask the relays from other sessions to skip ahead and not to send
         // objects we have already recevied or about to receive shortly.
-
-        if let Some((update_target, updater_session_id)) = &playout.last_update {
-            // Either the playout surpassed the prior update target, or we
-            // received the current object from the same relay as before, and
-            // we can send out the update while adhering to the options.
-            if current >= *update_target
-                || (*updater_session_id == sender_session_id
-                    && !(self.options.consolidated_updates && next == *update_target))
-            {
-                Self::subscribe_update(
-                    playout,
-                    sender_session_id,
-                    next,
-                    next_filter,
-                    self.options.non_preemptive_filtering,
-                );
-            }
-        } else {
-            Self::subscribe_update(
-                playout,
-                sender_session_id,
-                next,
-                next_filter,
-                self.options.non_preemptive_filtering,
-            );
-        }
+        Self::skip_ahead(
+            playout,
+            sender_session_id,
+            current,
+            self.options.non_preemptive_filtering,
+            self.options.consolidated_updates,
+        );
 
         Ok(())
     }
 
-    fn subscribe_update(
+    fn skip_ahead(
         playout: &mut TrackPlayoutStatus,
         sender_session_id: u64,
-        next: SubscribePair,
-        next_filter: SubscribeFilter,
+        current: SubscribePair,
         non_preemptive_filtering: bool,
+        consolidated_updates: bool,
     ) {
-        for (session_id, subscribe_id, _connection, subscriber) in &mut playout.subscribers {
-            if *session_id == sender_session_id {
+        for subscription in &mut playout.subscriptions.values_mut() {
+            if subscription.session_id == sender_session_id {
                 continue;
             }
 
-            let _ = subscriber.subscribe_update(
-                *subscribe_id,
-                next_filter.clone(),
-                non_preemptive_filtering,
-                127,
-            );
+            // TODO: based-on the failover method, do some computations here
+            let skip_mode = match &subscription.failover_method {
+                FailoverMethod::Static(skip_mode) => skip_mode,
+                FailoverMethod::DynamicThreshold(_threshold) => todo!(),
+                FailoverMethod::DynamicAdaptive => todo!(),
+            };
+
+            let (next, next_filter) = match skip_mode {
+                SkipMode::Disabled => return,
+                SkipMode::SameGroupNextObject(n) => {
+                    let next = SubscribePair {
+                        group: current.group,
+                        object: current.object + n,
+                    };
+                    (next.clone(), SubscribeFilter::AbsoluteStart(next))
+                }
+                SkipMode::NextGroupFirstObject(n) => {
+                    let next = SubscribePair {
+                        group: current.group + n,
+                        object: 0,
+                    };
+                    (next.clone(), SubscribeFilter::AbsoluteStart(next))
+                }
+            };
+
+            if let Some((update_target, updater_session_id)) = &subscription.last_update {
+                // Either the playout surpassed the prior update target, or we
+                // received the current object from the same relay as before, and
+                // we can send out the update while adhering to the options.
+                if current >= *update_target || (*updater_session_id == sender_session_id && !(consolidated_updates && next == *update_target)) {
+                    let _ = subscription.subscriber.subscribe_update(
+                        subscription.subscribe_id,
+                        next_filter,
+                        non_preemptive_filtering,
+                        127,
+                    );
+                }
+            } else {
+                let _ = subscription.subscriber.subscribe_update(
+                    subscription.subscribe_id,
+                    next_filter,
+                    non_preemptive_filtering,
+                    127,
+                );
+            }
+            subscription.last_update = Some((next, sender_session_id));
         }
-        playout.last_update = Some((next, sender_session_id));
     }
 
     pub fn add_subscriber(
@@ -201,21 +235,28 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         subscribe_id: u64,
         connection: moq_native_ietf::quic::Connection,
         subscriber: Subscriber,
+        failover_method: FailoverMethod,
     ) {
-        let record = (session_id, subscribe_id, connection, subscriber);
+        let subscription = Subscription {
+            session_id,
+            subscribe_id,
+            connection,
+            subscriber,
+            failover_method,
+            last_update: None,
+            n_duplicate: 0,
+        };
         if let Some(playout) = self.tracks.get_mut(&key) {
-            playout
-                .subscribers
-                .push(record);
+            playout.subscriptions.insert(session_id, subscription);
         } else {
+            let mut subscriptions = HashMap::new();
+            subscriptions.insert(session_id, subscription);
             self.tracks.insert(
                 key,
                 TrackPlayoutStatus {
                     last_id: None,
-                    last_update: None,
                     n_unique: 0,
-                    n_duplicate: 0,
-                    subscribers: vec![record],
+                    subscriptions: subscriptions,
                 },
             );
         }
@@ -223,19 +264,13 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
     pub fn remove_subscriber(self: &mut Self, key: String, session_id: u64) {
         if let Some(playout) = self.tracks.get_mut(&key) {
-            if let Some(index) = playout
-                .subscribers
-                .iter()
-                .position(|(subscriber_session_id, _, _, _)| *subscriber_session_id == session_id)
-            {
-                playout.subscribers.remove(index);
-            }
+            let _ = playout.subscriptions.remove(&session_id);
         }
     }
 
     pub fn clear_subscribers(self: &mut Self) {
         for playout in self.tracks.values_mut() {
-            playout.subscribers.clear();
+            playout.subscriptions.clear();
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::atomic;
 use std::{io::Cursor, sync::Arc};
 
-use crate::multipath::MultipathOut;
+use crate::multipath::{FailoverMethod, MultipathOut};
 use anyhow::Context;
 use log::{debug, info, trace, warn};
 use moq_transport::serve::{
@@ -51,7 +51,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
         })
     }
 
-    pub async fn run(&mut self, mode: InitMode) -> anyhow::Result<()> {
+    pub async fn run(&mut self, mode: InitMode, failover_method: FailoverMethod) -> anyhow::Result<()> {
         let mut tracks = vec![];
 
         match mode {
@@ -72,6 +72,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                         subscribe_id,
                         self.connection.clone(),
                         self.subscriber.clone(),
+                        failover_method.clone(),
                     );
 
                     let mut subscriber = self.subscriber.clone();
@@ -147,6 +148,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                             subscribe_id,
                             self.connection.clone(),
                             self.subscriber.clone(),
+                            failover_method.clone(),
                         );
 
                         let mut subscriber = self.subscriber.clone();
@@ -178,6 +180,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> Media<O> {
                         subscribe_id,
                         self.connection.clone(),
                         self.subscriber.clone(),
+                        failover_method.clone(),
                     );
 
                     let mut subscriber = self.subscriber.clone();

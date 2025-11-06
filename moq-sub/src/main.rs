@@ -14,7 +14,7 @@ use url::Url;
 use moq_native_ietf::quic;
 use moq_sub::{
     media::InitMode,
-    multipath::{MultipathOptions, MultipathOut},
+    multipath::{FailoverMethod, MultipathOptions, MultipathOut},
 };
 use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
@@ -45,11 +45,11 @@ async fn main() -> anyhow::Result<()> {
             SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
         }
     };
+    let failover_method = FailoverMethod::Static(skip_mode);
 
     let out = Arc::new(Mutex::new(MultipathOut::new(
         tokio::io::stdout(),
         MultipathOptions {
-            skip_mode,
             non_preemptive_filtering: config.non_preemptive_filtering,
             consolidated_updates: config.consolidated_updates,
         },
@@ -62,15 +62,19 @@ async fn main() -> anyhow::Result<()> {
         let (session, subscriber, tracks) =
             create_session(&config.tls, config.bind, url, namespace.clone(), config.idle_duration_ms).await?;
         log::debug!("session {} started for url {:?}.", i, url);
+
         let session_id = (i + 1) as u64; // workaround as session.session_id() always gives 0 for some reason
         let connection = session.connection();
+        let failover_method = failover_method.clone();
         let mut media = Media::new(session_id, connection, subscriber, tracks, out.clone()).await?;
+
         tasks.push(tokio::spawn(async move {
             session.run().await.or_else(|e| Err(format!("{:?}", e)))
         }));
         tasks.push(tokio::spawn(async move {
             media.run(
-                if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) }
+                if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) },
+                failover_method,
             ).await.or_else(|e| Err(format!("{:?}", e)))
         }));
 
