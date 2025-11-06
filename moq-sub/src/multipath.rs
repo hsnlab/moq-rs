@@ -51,6 +51,26 @@ pub enum SkipMode {
     NextGroupFirstObject(u64),
 }
 
+impl SkipMode {
+    fn skip_target(&self, current: SubscribePair) -> Option<SubscribePair> {
+        match self {
+            SkipMode::Disabled => return None,
+            SkipMode::SameGroupNextObject(n) => {
+                Some(SubscribePair {
+                    group: current.group,
+                    object: current.object + n,
+                })
+            }
+            SkipMode::NextGroupFirstObject(n) => {
+                Some(SubscribePair {
+                    group: current.group + n,
+                    object: 0,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum FailoverMethod {
     /// Static mode uses a fixed skip mode throughout the track given as a parameter.
@@ -174,35 +194,43 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         non_preemptive_filtering: bool,
         consolidated_updates: bool,
     ) {
+        let sender_stats = playout.subscriptions.get(&sender_session_id).expect("object sender exists").connection.stats().path.clone();
         for subscription in &mut playout.subscriptions.values_mut() {
             if subscription.session_id == sender_session_id {
                 continue;
             }
 
-            // TODO: based-on the failover method, do some computations here
             let skip_mode = match &subscription.failover_method {
                 FailoverMethod::Static(skip_mode) => skip_mode,
-                FailoverMethod::DynamicThreshold(_threshold) => todo!(),
-                FailoverMethod::DynamicAdaptive => todo!(),
+                FailoverMethod::DynamicThreshold(_threshold) => {
+                    //if subscription.n_duplicate as f64 / playout.n_unique as f64 > *threshold {
+                    //} else {
+                    //}
+                    todo!()
+                }
+                FailoverMethod::DynamicAdaptive => {
+                    let receiver_stats = subscription.connection.stats().path;
+                    // Perhaps use `subscription.connection.stats().udp_rx.bytes`?
+                    let r = sender_stats.cwnd as f64 / (sender_stats.rtt.as_millis() as f64 / 1000.0);
+                    let d_r1_sub = sender_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
+                    let d_r2_sub = receiver_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
+                    let s = 50000.0; // TODO: remove hard-coded object size
+                    let t_s = d_r1_sub + /*s / r +*/ d_r2_sub;
+                    let t_o = 1.0 / 15.0; // TODO: remove hard-coded FPS
+                    let n_d = t_s / t_o;
+                    let n_s = f64::ceil(n_d);
+                    let m = 10 as f64; // TODO: remove hard-code object-per-group count
+                    if n_s == 1.0 && m > 1.0 {
+                        &SkipMode::SameGroupNextObject(1)
+                    } else {
+                        let k = f64::ceil(n_s as f64 / m) as u64;
+                        &SkipMode::NextGroupFirstObject(k)
+                    }
+                }
             };
 
-            let (next, next_filter) = match skip_mode {
-                SkipMode::Disabled => return,
-                SkipMode::SameGroupNextObject(n) => {
-                    let next = SubscribePair {
-                        group: current.group,
-                        object: current.object + n,
-                    };
-                    (next.clone(), SubscribeFilter::AbsoluteStart(next))
-                }
-                SkipMode::NextGroupFirstObject(n) => {
-                    let next = SubscribePair {
-                        group: current.group + n,
-                        object: 0,
-                    };
-                    (next.clone(), SubscribeFilter::AbsoluteStart(next))
-                }
-            };
+            let Some(next) = skip_mode.skip_target(current.clone()) else { return; };
+            let next_filter = SubscribeFilter::AbsoluteStart(next.clone());
 
             if let Some((update_target, updater_session_id)) = &subscription.last_update {
                 // Either the playout surpassed the prior update target, or we
