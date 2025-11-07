@@ -1,3 +1,4 @@
+use moq_native_ietf::quic::congestion;
 use moq_transport::serve::SubgroupObjectReader;
 use moq_transport::{
     message::SubscribePair,
@@ -194,7 +195,12 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         non_preemptive_filtering: bool,
         consolidated_updates: bool,
     ) {
-        let sender_stats = playout.subscriptions.get(&sender_session_id).expect("object sender exists").connection.stats().path.clone();
+        let (sender_stats, sender_bw) = {
+            let connection = &playout.subscriptions.get(&sender_session_id).expect("object sender exists").connection;
+            let stats = connection.stats().path.clone();
+            let bw = connection.congestion_state().into_any().downcast_ref::<congestion::Bbr>().map_or(1.0, |bbr| (bbr.max_bandwidth_estimation() as f64).max(0.125)); // Ensure the estimated bitrate is at least 1 bps.
+            (stats, bw)
+        };
         for subscription in &mut playout.subscriptions.values_mut() {
             if subscription.session_id == sender_session_id {
                 continue;
@@ -210,20 +216,19 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 }
                 FailoverMethod::DynamicAdaptive => {
                     let receiver_stats = subscription.connection.stats().path;
-                    // Perhaps use `subscription.connection.stats().udp_rx.bytes`?
-                    let r = sender_stats.cwnd as f64 / (sender_stats.rtt.as_millis() as f64 / 1000.0);
+                    let r = sender_bw;
                     let d_r1_sub = sender_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
                     let d_r2_sub = receiver_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
                     let s = 50000.0; // TODO: remove hard-coded object size
-                    let t_s = d_r1_sub + /*s / r +*/ d_r2_sub;
+                    let t_s = d_r1_sub + s / r + d_r2_sub;
                     let t_o = 1.0 / 15.0; // TODO: remove hard-coded FPS
                     let n_d = t_s / t_o;
-                    let n_s = f64::ceil(n_d);
+                    let n_s = n_d.ceil();
                     let m = 10 as f64; // TODO: remove hard-code object-per-group count
                     if n_s == 1.0 && m > 1.0 {
                         &SkipMode::SameGroupNextObject(1)
                     } else {
-                        let k = f64::ceil(n_s as f64 / m) as u64;
+                        let k = (n_s as f64 / m).ceil() as u64;
                         &SkipMode::NextGroupFirstObject(k)
                     }
                 }

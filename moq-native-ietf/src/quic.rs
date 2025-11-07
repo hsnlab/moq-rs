@@ -11,6 +11,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
 pub use web_transport::Connection;
+pub use quinn::congestion;
 
 #[derive(Parser, Clone)]
 pub struct Args {
