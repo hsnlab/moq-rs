@@ -1,4 +1,3 @@
-use moq_native_ietf::quic::congestion;
 use moq_transport::serve::SubgroupObjectReader;
 use moq_transport::{
     message::SubscribePair,
@@ -17,6 +16,13 @@ struct TrackPlayoutStatus {
 
     subscriptions: HashMap<u64, Subscription>,
 }
+
+#[derive(Debug, Clone)]
+pub struct SubscriberParams {
+    pub failover_method: FailoverMethod,
+    pub bandwidth_hint: u64,
+}
+
 
 pub struct Subscription {
     // Given
@@ -37,6 +43,8 @@ pub struct Subscription {
     subscriber: Subscriber,
     /// Failover method to be used for this subscription.
     failover_method: FailoverMethod,
+    /// Bandwidth hint
+    bandwidth_hint: u64,
 
     /// The SubscribePair compromising the Group ID and the Object ID specified in the most
     /// recent subscription update, and the Session ID of which session it was sent from.
@@ -76,11 +84,6 @@ impl SkipMode {
 pub enum FailoverMethod {
     /// Static mode uses a fixed skip mode throughout the track given as a parameter.
     Static(SkipMode),
-    /// Dynamically changes the skip mode according to the relation of the proportion of duplicates to the total number
-    /// of objects and a fixed threshold value given as a paramter.
-    ///
-    /// The threshold must be a floating point number between 0 and 1.
-    DynamicThreshold(f64),
     /// Dynamically adapts to the environment observed through QUIC statistics.
     DynamicAdaptive,
 }
@@ -196,9 +199,10 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         consolidated_updates: bool,
     ) {
         let (sender_stats, sender_bw) = {
-            let connection = &playout.subscriptions.get(&sender_session_id).expect("object sender exists").connection;
+            let subscription = playout.subscriptions.get(&sender_session_id).expect("object sender exists");
+            let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
-            let bw = connection.congestion_state().into_any().downcast_ref::<congestion::Bbr>().map_or(1.0, |bbr| (bbr.max_bandwidth_estimation() as f64).max(0.125)); // Ensure the estimated bitrate is at least 1 bps.
+            let bw = subscription.bandwidth_hint;
             (stats, bw)
         };
         for subscription in &mut playout.subscriptions.values_mut() {
@@ -208,27 +212,36 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
             let skip_mode = match &subscription.failover_method {
                 FailoverMethod::Static(skip_mode) => skip_mode,
-                FailoverMethod::DynamicThreshold(_threshold) => {
-                    //if subscription.n_duplicate as f64 / playout.n_unique as f64 > *threshold {
-                    //} else {
-                    //}
-                    todo!()
-                }
                 FailoverMethod::DynamicAdaptive => {
                     let receiver_stats = subscription.connection.stats().path;
-                    let r = sender_bw;
-                    let d_r1_sub = sender_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
-                    let d_r2_sub = receiver_stats.rtt.as_millis() as f64 / 1000.0 / 2.0;
-                    let s = 50000.0; // TODO: remove hard-coded object size
+
+                    let rtt_r1_sub = sender_stats.rtt.as_nanos() as f64 / 1e9;
+                    let d_r1_sub = rtt_r1_sub / 2.0;
+
+                    let rtt_r2_sub = receiver_stats.rtt.as_nanos() as f64 / 1e9;
+                    let d_r2_sub = rtt_r2_sub / 2.0;
+
+                    let s = 50_000.0; // TODO: remove hard-coded object size
+                    let r = sender_bw as f64;
+
                     let t_s = d_r1_sub + s / r + d_r2_sub;
+
                     let t_o = 1.0 / 15.0; // TODO: remove hard-coded FPS
+
                     let n_d = t_s / t_o;
                     let n_s = n_d.ceil();
+
                     let m = 10 as f64; // TODO: remove hard-code object-per-group count
+
+                    log::trace!("t_s = {} + {} / {} + {} = {0} + {} + {2} = {}", d_r1_sub, s, r, d_r2_sub, s / r, t_s);
+                    log::trace!("n_s = {}", n_s);
+
                     if n_s == 1.0 && m > 1.0 {
+                        log::debug!("using object=1");
                         &SkipMode::SameGroupNextObject(1)
                     } else {
                         let k = (n_s as f64 / m).ceil() as u64;
+                        log::debug!("using group={}", k);
                         &SkipMode::NextGroupFirstObject(k)
                     }
                 }
@@ -237,26 +250,25 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let Some(next) = skip_mode.skip_target(current.clone()) else { return; };
             let next_filter = SubscribeFilter::AbsoluteStart(next.clone());
 
-            if let Some((update_target, updater_session_id)) = &subscription.last_update {
-                // Either the playout surpassed the prior update target, or we
-                // received the current object from the same relay as before, and
-                // we can send out the update while adhering to the options.
-                if current >= *update_target || (*updater_session_id == sender_session_id && !(consolidated_updates && next == *update_target)) {
-                    let _ = subscription.subscriber.subscribe_update(
-                        subscription.subscribe_id,
-                        next_filter,
-                        non_preemptive_filtering,
-                        127,
-                    );
+            if let Some((last_target, last_session_id)) = &subscription.last_update {
+                // The start location in the filter must not decrease.
+                if next < *last_target {
+                    continue;
                 }
-            } else {
-                let _ = subscription.subscriber.subscribe_update(
-                    subscription.subscribe_id,
-                    next_filter,
-                    non_preemptive_filtering,
-                    127,
-                );
+
+                // Only that session can update this subscription who did it the last time,
+                // except when the playout surpassed the prior update target.
+                if *last_session_id != sender_session_id && current < *last_target {
+                    continue;
+                }
             }
+
+            let _ = subscription.subscriber.subscribe_update(
+                subscription.subscribe_id,
+                next_filter,
+                non_preemptive_filtering,
+                127,
+            );
             subscription.last_update = Some((next, sender_session_id));
         }
     }
@@ -268,14 +280,15 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         subscribe_id: u64,
         connection: moq_native_ietf::quic::Connection,
         subscriber: Subscriber,
-        failover_method: FailoverMethod,
+        subscriber_params: SubscriberParams,
     ) {
         let subscription = Subscription {
             session_id,
             subscribe_id,
             connection,
             subscriber,
-            failover_method,
+            failover_method: subscriber_params.failover_method,
+            bandwidth_hint: subscriber_params.bandwidth_hint,
             last_update: None,
             n_duplicate: 0,
         };

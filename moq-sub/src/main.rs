@@ -14,7 +14,7 @@ use url::Url;
 use moq_native_ietf::quic;
 use moq_sub::{
     media::InitMode,
-    multipath::{FailoverMethod, MultipathOptions, MultipathOut},
+    multipath::{FailoverMethod, MultipathOptions, MultipathOut, SubscriberParams},
 };
 use moq_sub::{media::Media, multipath::SkipMode};
 use moq_transport::{
@@ -22,6 +22,8 @@ use moq_transport::{
     serve::Tracks,
     session::{Session, Subscriber},
 };
+
+const DEFAULT_BANDWIDTH_HINT: u64 = 2_000_000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,16 +38,21 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     let namespace = Tuple::from_utf8_path(&config.name);
-    let skip_mode = if config.skip_ahead == 0 {
-        SkipMode::Disabled
+
+    let failover_method = if config.adaptive_skip {
+        FailoverMethod::DynamicAdaptive
     } else {
-        let n = config.skip_ahead;
-        match config.skip_unit {
-            SkipUnit::Object => SkipMode::SameGroupNextObject(n),
-            SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
-        }
+        let skip_mode = if config.skip_ahead == 0 {
+            SkipMode::Disabled
+        } else {
+            let n = config.skip_ahead;
+            match config.skip_unit {
+                SkipUnit::Object => SkipMode::SameGroupNextObject(n),
+                SkipUnit::Group => SkipMode::NextGroupFirstObject(n),
+            }
+        };
+        FailoverMethod::Static(skip_mode)
     };
-    let failover_method = FailoverMethod::Static(skip_mode);
 
     let out = Arc::new(Mutex::new(MultipathOut::new(
         tokio::io::stdout(),
@@ -65,7 +72,12 @@ async fn main() -> anyhow::Result<()> {
 
         let session_id = (i + 1) as u64; // workaround as session.session_id() always gives 0 for some reason
         let connection = session.connection();
-        let failover_method = failover_method.clone();
+
+        let subscriber_params = SubscriberParams {
+            failover_method: failover_method.clone(),
+            bandwidth_hint: *config.bandwidth_hints.get(i).unwrap_or(&DEFAULT_BANDWIDTH_HINT),
+        };
+
         let mut media = Media::new(session_id, connection, subscriber, tracks, out.clone()).await?;
 
         tasks.push(tokio::spawn(async move {
@@ -74,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         tasks.push(tokio::spawn(async move {
             media.run(
                 if i == 0 { InitMode::InitTrack } else { InitMode::Direct("1.m4s".to_string()) },
-                failover_method,
+                subscriber_params,
             ).await.or_else(|e| Err(format!("{:?}", e)))
         }));
 
@@ -198,6 +210,16 @@ pub struct Config {
     /// The unit of --skip-ahead
     #[clap(long, default_value_t, value_enum)]
     pub skip_unit: SkipUnit,
+
+    /// Set the skip-ahead offset dynamically based on the environment (i.e., use the adapative method)
+    /// When provided, the --skip-unit and --skip-ahead arguments are ignored.
+    #[arg(long)]
+    pub adaptive_skip: bool,
+
+    /// Hint used by the dynamic adaptive method for estimating the bandwidth on each path.
+    /// Default: 2 Mbps on every path.
+    #[arg(long)]
+    pub bandwidth_hints: Vec<u64>,
 
     /// Request non-preemptive handling of subscription filters from relay(s).
     /// This behavior of the relay does not conform to the draft, therefore,
