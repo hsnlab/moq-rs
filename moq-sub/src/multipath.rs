@@ -91,7 +91,6 @@ pub enum FailoverMethod {
 #[derive(Clone, Debug)]
 pub struct MultipathOptions {
     pub non_preemptive_filtering: bool,
-    pub consolidated_updates: bool,
 }
 
 pub struct MultipathOut<O: AsyncWrite + Send + Unpin + 'static> {
@@ -185,7 +184,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             sender_session_id,
             current,
             self.options.non_preemptive_filtering,
-            self.options.consolidated_updates,
         );
 
         Ok(())
@@ -196,7 +194,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         sender_session_id: u64,
         current: SubscribePair,
         non_preemptive_filtering: bool,
-        consolidated_updates: bool,
     ) {
         let (sender_stats, sender_bw) = {
             let subscription = playout.subscriptions.get(&sender_session_id).expect("object sender exists");

@@ -58,7 +58,6 @@ async fn main() -> anyhow::Result<()> {
         tokio::io::stdout(),
         MultipathOptions {
             non_preemptive_filtering: config.non_preemptive_filtering,
-            consolidated_updates: config.consolidated_updates,
         },
     )));
 
@@ -226,11 +225,6 @@ pub struct Config {
     /// this feature requires special relays to work.
     #[arg(long)]
     pub non_preemptive_filtering: bool,
-
-    /// Consolidate the amount of subscribe update messages sent by preventing
-    /// updates to the same target to be sent out more than once.
-    #[arg(long)]
-    pub consolidated_updates: bool,
 
     /// The name of the broadcast
     #[arg(long)]
