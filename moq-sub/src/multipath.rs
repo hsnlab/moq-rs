@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc, TimeDelta};
 use moq_transport::serve::SubgroupObjectReader;
 use moq_transport::{
     message::SubscribePair,
@@ -8,11 +9,18 @@ use std::collections::HashMap;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 struct TrackPlayoutStatus {
-    /// The Group ID and Object ID of the most recently received object if there were any.
-    last_id: Option<(u64, u64)>,
+    /// The location and the timestamp of the most recently received object, if any.
+    last_object: Option<(SubscribePair, DateTime<Utc>)>,
 
     /// The total number of distinct objects received.
     n_unique: u64,
+
+    /// Maximum of the object size observed in the subscription.
+    max_object_size: u64,
+    /// Exponentially weighted moving average of the object interarrival time observed in the subscription.
+    avg_interarrival_time: TimeDelta,
+    /// Maximum of the number of objects per group observed in the subscription.
+    max_object_per_group: u64,
 
     subscriptions: HashMap<u64, Subscription>,
 }
@@ -23,6 +31,7 @@ pub struct SubscriberParams {
     pub bandwidth_hint: u64,
 }
 
+const EWMA_ALPHA: f64 = 0.8;
 
 pub struct Subscription {
     // Given
@@ -43,11 +52,10 @@ pub struct Subscription {
     subscriber: Subscriber,
     /// Failover method to be used for this subscription.
     failover_method: FailoverMethod,
-    /// Bandwidth hint
+    /// Bandwidth hint provided as an external parameter to facilitate the estimation of signaling time.
     bandwidth_hint: u64,
 
-    /// The SubscribePair compromising the Group ID and the Object ID specified in the most
-    /// recent subscription update, and the Session ID of which session it was sent from.
+    /// The location specified in the most recent subscription update, if any, and the id of the session it was sent from.
     last_update: Option<(SubscribePair, u64)>,
     /// The number of duplicate objects received from this subscription.
     n_duplicate: u64,
@@ -134,8 +142,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         let group_id = object.group_id;
         let object_id = object.object_id;
 
-        let id = (group_id, object_id);
-
         let playout = self
             .tracks
             .get_mut(&key)
@@ -146,8 +152,17 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             .get_mut(&sender_session_id)
             .expect("sender session ID corresponds to an existent subscription");
 
-        if let Some(last_id) = playout.last_id {
-            if id <= last_id {
+        playout.max_object_size = playout.max_object_size.max(object.size as u64);
+
+        let current = SubscribePair {
+            group: group_id,
+            object: object_id,
+        };
+
+        let current_time = Utc::now();
+
+        if let Some((last, last_time)) = &playout.last_object {
+            if current <= *last {
                 // Already seen this pair
                 log::trace!(
                     "object action: drop, session_id: {}, group_id: {}, subgroup_id: {}, object_id: {}",
@@ -159,8 +174,15 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 subscription.n_duplicate += 1;
                 return Ok(());
             }
+
+            let interarrival_time = current_time - last_time;
+            playout.avg_interarrival_time = (playout.avg_interarrival_time * ((1.0 - EWMA_ALPHA) * 100.0) as i32 + interarrival_time * (EWMA_ALPHA * 100.0) as i32) / 100;
+
+            if current.group != last.group {
+                playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
+            }
         }
-        playout.last_id = Some(id);
+        playout.last_object = Some((current.clone(), current_time));
         playout.n_unique += 1;
 
         log::trace!(
@@ -171,11 +193,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             object.object_id
         );
         self.out.write_all(&buf).await?;
-
-        let current = SubscribePair {
-            group: group_id,
-            object: object_id,
-        };
 
         // Ask the relays from other sessions to skip ahead and not to send
         // objects we have already recevied or about to receive shortly.
@@ -195,12 +212,13 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         current: SubscribePair,
         non_preemptive_filtering: bool,
     ) {
-        let (sender_stats, sender_bw) = {
+        let (sender_stats, sender_bw, sender_iat) = {
             let subscription = playout.subscriptions.get(&sender_session_id).expect("object sender exists");
             let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
             let bw = subscription.bandwidth_hint;
-            (stats, bw)
+            let iat = playout.avg_interarrival_time.as_seconds_f64();
+            (stats, bw, iat)
         };
         for subscription in &mut playout.subscriptions.values_mut() {
             if subscription.session_id == sender_session_id {
@@ -218,20 +236,22 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                     let rtt_r2_sub = receiver_stats.rtt.as_nanos() as f64 / 1e9;
                     let d_r2_sub = rtt_r2_sub / 2.0;
 
-                    let s = 50_000.0; // TODO: remove hard-coded object size
+                    let s = playout.max_object_size as f64;
                     let r = sender_bw as f64;
 
                     let t_s = d_r1_sub + s / r + d_r2_sub;
 
-                    let t_o = 1.0 / 15.0; // TODO: remove hard-coded FPS
+                    let t_o = sender_iat;
 
                     let n_d = t_s / t_o;
                     let n_s = n_d.ceil();
 
-                    let m = 10 as f64; // TODO: remove hard-code object-per-group count
+                    let m = playout.max_object_per_group as f64;
 
                     log::trace!("t_s = {} + {} / {} + {} = {0} + {} + {2} = {}", d_r1_sub, s, r, d_r2_sub, s / r, t_s);
-                    log::trace!("n_s = {}", n_s);
+                    log::trace!("t_o = {}", t_o);
+                    log::trace!("n_d = {}; n_s = {}", n_d, n_s);
+                    log::trace!("m = {}", m);
 
                     if n_s == 1.0 && m > 1.0 {
                         log::debug!("using object=1");
@@ -289,19 +309,22 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             last_update: None,
             n_duplicate: 0,
         };
+
         if let Some(playout) = self.tracks.get_mut(&key) {
             playout.subscriptions.insert(session_id, subscription);
         } else {
             let mut subscriptions = HashMap::new();
             subscriptions.insert(session_id, subscription);
-            self.tracks.insert(
-                key,
-                TrackPlayoutStatus {
-                    last_id: None,
-                    n_unique: 0,
-                    subscriptions: subscriptions,
-                },
-            );
+
+            let playout = TrackPlayoutStatus {
+                last_object: None,
+                n_unique: 0,
+                max_object_size: 0,
+                avg_interarrival_time: TimeDelta::milliseconds(1), // Assume 1-ms initial object interarrival time.
+                max_object_per_group: 1,
+                subscriptions: subscriptions,
+            };
+            self.tracks.insert(key, playout);
         }
     }
 
