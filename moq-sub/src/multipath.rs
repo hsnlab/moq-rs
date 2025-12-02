@@ -17,8 +17,8 @@ struct TrackPlayoutStatus {
 
     /// Maximum of the object size observed in the subscription.
     max_object_size: u64,
-    /// Exponentially weighted moving average of the object interarrival time observed in the subscription.
-    avg_interarrival_time: TimeDelta,
+    /// Maximum of the object interarrival time observed in the subscription.
+    max_interarrival_time: TimeDelta,
     /// Maximum of the number of objects per group observed in the subscription.
     max_object_per_group: u64,
 
@@ -30,8 +30,6 @@ pub struct SubscriberParams {
     pub failover_method: FailoverMethod,
     pub bandwidth_hint: u64,
 }
-
-const EWMA_ALPHA: f64 = 0.8;
 
 pub struct Subscription {
     // Given
@@ -176,7 +174,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             }
 
             let interarrival_time = current_time - last_time;
-            playout.avg_interarrival_time = (playout.avg_interarrival_time * ((1.0 - EWMA_ALPHA) * 100.0) as i32 + interarrival_time * (EWMA_ALPHA * 100.0) as i32) / 100;
+            playout.max_interarrival_time = playout.max_interarrival_time.max(interarrival_time);
 
             if current.group != last.group {
                 playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
@@ -217,7 +215,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
             let bw = subscription.bandwidth_hint;
-            let iat = playout.avg_interarrival_time.as_seconds_f64();
+            let iat = playout.max_interarrival_time.as_seconds_f64();
             (stats, bw, iat)
         };
         for subscription in &mut playout.subscriptions.values_mut() {
@@ -320,7 +318,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 last_object: None,
                 n_unique: 0,
                 max_object_size: 0,
-                avg_interarrival_time: TimeDelta::milliseconds(1), // Assume 1-ms initial object interarrival time.
+                max_interarrival_time: TimeDelta::milliseconds(1), // Assume 1-ms initial object interarrival time.
                 max_object_per_group: 1,
                 subscriptions: subscriptions,
             };
