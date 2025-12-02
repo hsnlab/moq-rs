@@ -176,9 +176,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let interarrival_time = current_time - last_time;
             playout.max_interarrival_time = playout.max_interarrival_time.max(interarrival_time);
 
-            if current.group != last.group {
-                playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
-            }
+            playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
         }
         playout.last_object = Some((current.clone(), current_time));
         playout.n_unique += 1;
