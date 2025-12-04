@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc, TimeDelta};
+use itertools::Itertools;
 use moq_transport::serve::SubgroupObjectReader;
 use moq_transport::{
     message::SubscribePair,
@@ -6,6 +7,7 @@ use moq_transport::{
     session::{SubscribeFilter, Subscriber},
 };
 use std::collections::HashMap;
+use std::fmt::Display;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 struct TrackPlayoutStatus {
@@ -18,7 +20,7 @@ struct TrackPlayoutStatus {
     /// Maximum of the object size observed in the subscription.
     max_object_size: u64,
     /// Maximum of the object interarrival time observed in the subscription.
-    max_interarrival_time: TimeDelta,
+    interarrival_times: SlidingWindow<TimeDelta>,
     /// Maximum of the number of objects per group observed in the subscription.
     max_object_per_group: u64,
 
@@ -29,6 +31,39 @@ struct TrackPlayoutStatus {
 pub struct SubscriberParams {
     pub failover_method: FailoverMethod,
     pub bandwidth_hint: u64,
+}
+
+struct SlidingWindow<T>(Vec<T>, usize);
+
+impl<T> SlidingWindow<T> {
+    fn new(max_length: usize) -> Self {
+        Self(Vec::new(), max_length)
+    }
+
+    fn insert(&mut self, t: T) {
+        if self.0.len() == self.1 {
+            self.0.remove(0);
+        }
+        self.0.push(t);
+    }
+}
+
+impl<T> SlidingWindow<T>
+where T : Display {
+    fn dump(&self) {
+        for (i, x) in self.0.iter().enumerate() {
+            log::warn!("[{}]={}", i, x);
+        }
+    }
+}
+
+impl<T> SlidingWindow<T>
+where T : Ord + Clone {
+    fn p95(&self) -> Option<T> {
+        let sorted = self.0.iter().cloned().sorted();
+        let index = 95 * sorted.len() / 100;
+        sorted.skip(index).next()
+    }
 }
 
 pub struct Subscription {
@@ -174,7 +209,8 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             }
 
             let interarrival_time = current_time - last_time;
-            playout.max_interarrival_time = playout.max_interarrival_time.max(interarrival_time);
+            playout.interarrival_times.insert(interarrival_time);
+            playout.interarrival_times.dump();
 
             playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
         }
@@ -213,7 +249,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
             let bw = subscription.bandwidth_hint;
-            let iat = playout.max_interarrival_time.as_seconds_f64();
+            let iat = playout.interarrival_times.p95().expect("1-ms initial value assumed").as_seconds_f64();
             (stats, bw, iat)
         };
         for subscription in &mut playout.subscriptions.values_mut() {
@@ -312,14 +348,15 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let mut subscriptions = HashMap::new();
             subscriptions.insert(session_id, subscription);
 
-            let playout = TrackPlayoutStatus {
+            let mut playout = TrackPlayoutStatus {
                 last_object: None,
                 n_unique: 0,
                 max_object_size: 0,
-                max_interarrival_time: TimeDelta::milliseconds(1), // Assume 1-ms initial object interarrival time.
+                interarrival_times: SlidingWindow::new(20),
                 max_object_per_group: 1,
                 subscriptions: subscriptions,
             };
+            playout.interarrival_times.insert(TimeDelta::milliseconds(1)); // Assume 1-ms initial object interarrival time.
             self.tracks.insert(key, playout);
         }
     }
