@@ -36,6 +36,8 @@ pub struct SubscriberParams {
 struct SlidingWindow<T>(Vec<T>, usize);
 
 impl<T> SlidingWindow<T> {
+    const MIN_LEN: usize = 2;
+
     fn new(max_length: usize) -> Self {
         Self(Vec::new(), max_length)
     }
@@ -45,6 +47,10 @@ impl<T> SlidingWindow<T> {
             self.0.remove(0);
         }
         self.0.push(t);
+    }
+
+    fn enough(&self) -> bool {
+        self.0.len() > SlidingWindow::<T>::MIN_LEN
     }
 }
 
@@ -244,14 +250,23 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         current: SubscribePair,
         non_preemptive_filtering: bool,
     ) {
-        let (sender_stats, sender_bw, sender_iat) = {
+        let (sender_stats, sender_bw) = {
             let subscription = playout.subscriptions.get(&sender_session_id).expect("object sender exists");
             let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
             let bw = subscription.bandwidth_hint;
-            let iat = playout.interarrival_times.p95().expect("1-ms initial value assumed").as_seconds_f64();
-            (stats, bw, iat)
+            (stats, bw)
         };
+
+        if !playout.interarrival_times.enough() {
+            return;
+        }
+
+        let Some(iat) = playout.interarrival_times.p95() else {
+            return;
+        };
+        let iat = iat.as_seconds_f64();
+
         for subscription in &mut playout.subscriptions.values_mut() {
             if subscription.session_id == sender_session_id {
                 continue;
@@ -273,7 +288,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
                     let t_s = d_r1_sub + s / r + d_r2_sub;
 
-                    let t_o = sender_iat;
+                    let t_o = iat;
 
                     let n_d = t_s / t_o;
                     let n_s = n_d.ceil();
@@ -348,15 +363,14 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let mut subscriptions = HashMap::new();
             subscriptions.insert(session_id, subscription);
 
-            let mut playout = TrackPlayoutStatus {
+            let playout = TrackPlayoutStatus {
                 last_object: None,
                 n_unique: 0,
                 max_object_size: 0,
-                interarrival_times: SlidingWindow::new(20),
+                interarrival_times: SlidingWindow::new(10),
                 max_object_per_group: 1,
                 subscriptions: subscriptions,
             };
-            playout.interarrival_times.insert(TimeDelta::milliseconds(1)); // Assume 1-ms initial object interarrival time.
             self.tracks.insert(key, playout);
         }
     }
