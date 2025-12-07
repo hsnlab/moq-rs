@@ -56,6 +56,7 @@ impl<T> SlidingWindow<T> {
 
 impl<T> SlidingWindow<T>
 where T : Display {
+    #[allow(dead_code)]
     fn dump(&self) {
         for (i, x) in self.0.iter().enumerate() {
             log::warn!("[{}]={}", i, x);
@@ -216,7 +217,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
             let interarrival_time = current_time - last_time;
             playout.interarrival_times.insert(interarrival_time);
-            playout.interarrival_times.dump();
 
             playout.max_object_per_group = playout.max_object_per_group.max(last.object + 1);
         }
@@ -258,15 +258,6 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             (stats, bw)
         };
 
-        if !playout.interarrival_times.enough() {
-            return;
-        }
-
-        let Some(iat) = playout.interarrival_times.p95() else {
-            return;
-        };
-        let iat = iat.as_seconds_f64();
-
         for subscription in &mut playout.subscriptions.values_mut() {
             if subscription.session_id == sender_session_id {
                 continue;
@@ -288,7 +279,18 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
 
                     let t_s = d_r1_sub + s / r + d_r2_sub;
 
-                    let t_o = iat;
+                    let t_o = {
+                        if !playout.interarrival_times.enough() {
+                            return;
+                        }
+
+                        let Some(iat) = playout.interarrival_times.p95() else {
+                            return;
+                        };
+                        let iat = iat.as_seconds_f64();
+                        iat
+                    };
+
 
                     let n_d = t_s / t_o;
                     let n_s = n_d.ceil();
