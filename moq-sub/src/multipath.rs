@@ -96,7 +96,7 @@ pub struct Subscription {
     bandwidth_hint: u64,
 
     /// The location specified in the most recent subscription update, if any, and the id of the session it was sent from.
-    last_update: Option<(SubscribePair, u64)>,
+    last_update: Option<SubscribePair>,
     /// The number of duplicate objects received from this subscription.
     n_duplicate: u64,
 }
@@ -250,12 +250,13 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
         current: SubscribePair,
         non_preemptive_filtering: bool,
     ) {
-        let (sender_stats, sender_bw) = {
+        let (sender_stats, sender_bw, sender_last_update) = {
             let subscription = playout.subscriptions.get(&sender_session_id).expect("object sender exists");
             let connection = &subscription.connection;
             let stats = connection.stats().path.clone();
             let bw = subscription.bandwidth_hint;
-            (stats, bw)
+            let last_update = subscription.last_update.clone();
+            (stats, bw, last_update)
         };
 
         for subscription in &mut playout.subscriptions.values_mut() {
@@ -316,15 +317,17 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
             let Some(next) = skip_mode.skip_target(current.clone()) else { return; };
             let next_filter = SubscribeFilter::AbsoluteStart(next.clone());
 
-            if let Some((last_target, last_session_id)) = &subscription.last_update {
-                // The start location in the filter must not decrease.
-                if next < *last_target {
+            if let Some(last_target) = &sender_last_update {
+                // Don't update the session if the playout has not surpassed
+                // the prior update target yet.
+                if current < *last_target {
                     continue;
                 }
+            }
 
-                // Only that session can update this subscription who did it the last time,
-                // except when the playout surpassed the prior update target.
-                if *last_session_id != sender_session_id && current < *last_target {
+            if let Some(last_target) = &subscription.last_update {
+                // The start location in the filter must not decrease.
+                if next < *last_target {
                     continue;
                 }
             }
@@ -335,7 +338,7 @@ impl<O: AsyncWrite + Send + Unpin + 'static> MultipathOut<O> {
                 non_preemptive_filtering,
                 127,
             );
-            subscription.last_update = Some((next, sender_session_id));
+            subscription.last_update = Some(next);
         }
     }
 
